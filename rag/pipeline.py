@@ -5,16 +5,14 @@ Searches knowledge base and passes context to LLM.
 """
 
 import os
-from typing import Optional
 
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from rich.console import Console
 
-from tools.movie_api import MovieAPITool
 from storage.vector_store import VectorStore
-
+from tools.movie_api import MovieAPITool
 
 load_dotenv()
 console = Console()
@@ -34,7 +32,7 @@ class RAGPipeline:
     """
     Simple RAG pipeline - searches knowledge base and provides context to LLM.
     """
-    
+
     def __init__(
         self,
         model: str | None = None,
@@ -44,50 +42,52 @@ class RAGPipeline:
         """Initialize the RAG pipeline."""
         self.movie_api = movie_api or MovieAPITool()
         self.vector_store = vector_store or VectorStore()
-        
+
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY required")
-        
+
         self.model_name = model or os.getenv("LLM_MODEL", DEFAULT_MODEL)
-        
+
         self.llm = ChatOpenAI(
             model=self.model_name,
             openai_api_key=api_key,
             openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.7,
         )
-    
+
     def query(self, user_input: str, top_k: int = 5) -> str:
         """Process user query through RAG pipeline."""
-        console.print(f"[dim]Searching knowledge base...[/dim]")
-        
+        console.print("[dim]Searching knowledge base...[/dim]")
+
         # Search for relevant movies
         results = self.vector_store.search(user_input, top_k=top_k)
-        
+
         if not results:
             return "No movies in knowledge base. Please add some movies first."
-        
+
         # Build context from results
         context = self._build_context(results)
-        
+
         console.print(f"[dim]Found {len(results)} relevant movies. Generating response...[/dim]")
-        
+
         # Generate response
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=f"""Movies in database:
+            HumanMessage(
+                content=f"""Movies in database:
 
 {context}
 
 User request: {user_input}
 
-Recommend matching movies and explain why they fit."""),
+Recommend matching movies and explain why they fit."""
+            ),
         ]
-        
+
         response = self.llm.invoke(messages)
         return response.content
-    
+
     def _build_context(self, results: list[dict]) -> str:
         """Build context string from search results."""
         parts = []
@@ -101,39 +101,35 @@ Recommend matching movies and explain why they fit."""),
                 f"   Plot: {meta.get('plot', 'N/A')[:200]}..."
             )
         return "\n\n".join(parts)
-    
+
     def add_movie(self, query: str) -> str:
         """Add a movie to the knowledge base."""
         try:
             movie = self.movie_api.search(query)
-            added = self.vector_store.add_movie(
-                movie.imdb_id,
-                movie.to_document(),
-                movie.to_dict()
-            )
+            added = self.vector_store.add_movie(movie.imdb_id, movie.to_document(), movie.to_dict())
             if added:
                 return f"Added '{movie.title}' ({movie.year})"
             return f"'{movie.title}' already exists"
         except Exception as e:
             return f"Error: {e}"
-    
+
     def list_movies(self) -> str:
         """List all movies in knowledge base."""
         movies = self.vector_store.get_all_movies()
         if not movies:
             return "Knowledge base is empty."
-        
+
         lines = [f"Knowledge base ({len(movies)} movies):"]
         for m in movies:
             meta = m["metadata"]
             lines.append(f"  - {meta.get('title')} ({meta.get('year')})")
         return "\n".join(lines)
-    
+
     def chat(self) -> None:
         """Interactive chat loop."""
         console.print("[bold blue]Movie Assistant[/bold blue]")
         console.print("Commands: 'add <title>', 'list', 'quit'\n")
-        
+
         while True:
             try:
                 user_input = input("You: ").strip()
@@ -148,11 +144,11 @@ Recommend matching movies and explain why they fit."""),
                 if user_input.lower() == "list":
                     console.print(self.list_movies() + "\n")
                     continue
-                
+
                 response = self.query(user_input)
                 console.print(f"\n[green]Assistant:[/green] {response}\n")
-                
+
             except KeyboardInterrupt:
                 break
-        
+
         console.print("\n[dim]Goodbye![/dim]")
