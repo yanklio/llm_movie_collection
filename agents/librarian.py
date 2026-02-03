@@ -30,11 +30,15 @@ You have access to tools to search and retrieve movie data. You can process natu
 **Available Tools:**
 1. `search_movie_by_title` - Get detailed info for ONE specific movie (use for single titles)
 2. `search_movies` - Find MULTIPLE movies matching a keyword (use for broad searches)
+3. `search_person` - Find movies by ACTOR or DIRECTOR name (use for "Tom Hanks movies", "Nolan films")
 
 **Your workflow:**
 1. **Understand the request** - What is the user asking for?
-2. **Use appropriate tools** - search_movies for "all movies by X", search_movie_by_title for specific titles  
-3. **Return movie list** - For each movie you want to add, return it in this format:
+2. **Use the RIGHT tool:**
+   - For specific movie titles → `search_movie_by_title("Inception")`
+   - For actor/director names → `search_person("Tom Hanks")` or `search_person("Christopher Nolan")`
+   - For general keyword searches → `search_movies("Matrix")`
+3. **Return movie list** - After using tools, return movies in this format:
 
 ```
 MOVIES_TO_ADD:
@@ -52,11 +56,17 @@ MOVIES_TO_ADD:
 - tt1375666: Inception (2010)
 ```
 
+Request: "Add Tom Hanks movies"
+Steps:
+1. Call search_person("Tom Hanks") - DO NOT use search_movies for actors!
+2. Get the list of movies with IMDb IDs
+3. Return them
+
 Request: "Add Christopher Nolan movies"
 Steps:
-1. Use search_movies("Christopher Nolan") or search_movies("Nolan")
-2. Check results for movies directed by Christopher Nolan
-3. Return the list
+1. Call search_person("Christopher Nolan")
+2. Get the list
+3. Return it
 
 CRITICAL: Always return MOVIES_TO_ADD with specific IMDb IDs. The system will handle the actual ingestion."""
 
@@ -157,7 +167,34 @@ Plot: {movie.plot}"""
             except Exception as e:
                 return f"Error: {e}"
         
-        return [search_movie_by_title, search_movies]
+        @tool
+        def search_person(person_name: str) -> str:
+            """
+            Search for movies by PERSON NAME (actor, director, etc.).
+            Use THIS tool for requests like "Tom Hanks movies" or "Christopher Nolan films".
+            
+            Args:
+                person_name: Full name of the person (e.g. "Tom Hanks", "Christopher Nolan")
+            
+            Returns:
+                List of movies the person acted in or directed, with IMDb IDs
+            """
+            try:
+                results = movie_api.search_person(person_name)
+                
+                if not results:
+                    return f"No movies found for person: {person_name}"
+                
+                output = f"Found {len(results)} movie(s) for {person_name}:\n\n"
+                for movie in results:
+                    role = movie.get('Role', 'Unknown')
+                    output += f"- {movie.get('imdbID')}: {movie.get('Title')} ({movie.get('Year')}) [{role}]\n"
+                
+                return output
+            except Exception as e:
+                return f"Error: {e}"
+        
+        return [search_movie_by_title, search_movies, search_person]
     
     
     def process_request(self, request: str) -> tuple[list[MovieInfo], list[str]]:
@@ -189,10 +226,25 @@ Plot: {movie.plot}"""
                 {"recursion_limit": 10}  # Allow more iterations for complex requests
             )
             
+            # Advanced logging: Show tool calls
+            self.log("\n=== Agent Execution Trace ===")
+            for i, msg in enumerate(result["messages"]):
+                msg_type = type(msg).__name__
+                
+                if msg_type == "AIMessage":
+                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            self.log(f"🔧 Tool Call: {tc.get('name')}({tc.get('args')})")
+                
+                elif msg_type == "ToolMessage":
+                    content = msg.content[:150] if hasattr(msg, 'content') else ""
+                    self.log(f"📥 Tool Response: {content}...")
+            
             # Extract the response
             final_message = result["messages"][-1].content
+            self.log(f"\n=== Final Response ===\n{final_message}\n")
             
-            # Parse the MOV IES_TO_ADD section
+            # Parse the MOVIES_TO_ADD section
             movie_ids = self._parse_movie_list(final_message)
             
             if not movie_ids:
