@@ -69,6 +69,37 @@ class MovieAPITool:
         match = self.IMDB_URL_PATTERN.search(url)
         return match.group(1) if match else None
     
+    
+    def search_movies(self, search_term: str, year: Optional[str] = None) -> list[dict]:
+        """
+        Search for multiple movies matching a search term.
+        
+        Args:
+            search_term: Search query (title, keyword, etc.)
+            year: Optional year filter
+            
+        Returns:
+            List of movie dictionaries with basic info (Title, Year, imdbID, Type, Poster)
+        """
+        params = {
+            "apikey": self.api_key,
+            "s": search_term,  # 's' parameter for search
+        }
+        if year:
+            params["y"] = year
+        
+        response = requests.get(self.BASE_URL, params=params, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if data.get("Response") == "False":
+            error = data.get("Error", "Unknown error")
+            raise ValueError(f"OMDb API error: {error}")
+        
+        # Return the search results
+        return data.get("Search", [])
+    
     def search(self, query: str) -> MovieInfo:
         """Smart search that handles titles, IMDb IDs, and URLs."""
         # Check if it's an IMDb URL
