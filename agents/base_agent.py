@@ -23,7 +23,6 @@ class AgentConfig:
     name: str
     description: str
     patterns: list[str]
-    keywords: list[str]
     capabilities: list[str]
     example_queries: list[str]
 

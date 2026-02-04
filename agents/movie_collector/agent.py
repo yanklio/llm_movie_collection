@@ -28,7 +28,6 @@ class MovieCollector(BaseAgent):
             name="Movie Collector",
             description="LLM-enhanced data fetching specialist. Analyzes queries intelligently and searches TMDB API.",
             patterns=["fetch:", "fetch ", "lookup:", "lookup ", "get:", "get "],
-            keywords=["fetch", "lookup", "get", "retrieve", "find"],
             capabilities=[
                 "LLM-powered query analysis",
                 "Smart search strategy selection",

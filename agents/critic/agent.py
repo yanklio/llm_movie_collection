@@ -26,7 +26,6 @@ class Critic(BaseAgent):
             name="Movie Critic",
             description="Intelligent movie recommendation agent. Provides personalized recommendations based on mood, genre, or themes.",
             patterns=["recommend", "suggest", "want", "looking for"],
-            keywords=["recommend", "suggest", "want", "looking for"],
             capabilities=[
                 "Query expansion for vague requests",
                 "Semantic similarity search",

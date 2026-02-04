@@ -32,7 +32,6 @@ class Librarian(BaseAgent):
             name="Movie Librarian",
             description="LLM-enhanced storage specialist. Creates rich summaries and provides conversational watchlist management.",
             patterns=["add:", "add ", "store:", "store ", "save:", "save "],
-            keywords=["add", "store", "save", "import", "check", "delete", "remove"],
             capabilities=[
                 "LLM-generated movie summaries",
                 "Natural language query understanding",
