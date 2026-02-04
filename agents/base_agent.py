@@ -48,19 +48,15 @@ class BaseAgent(ABC):
     2. Implement process() to handle requests
     """
     
-    def __init__(self, model: str | None = None):
-        """
-        Initialize the agent.
-        
-        Args:
-            model: Optional LLM model override
-        """
+    def __init__(self, model: str | None = None, verbose: bool = False):
+        """Initialize the agent with optional LLM."""
         self.model_name = model or os.getenv("LLM_MODEL", "openai/gpt-oss-20b:free")
-        self.llm = None
-        
-        # Initialize LLM if agent requires it
-        if self.get_config().requires_llm:
-            self.llm = self._init_llm()
+        self.verbose = verbose
+        self.llm = self._init_llm() if self.requires_llm() else None
+    
+    def requires_llm(self) -> bool:
+        """Check if the agent requires an LLM."""
+        return self.get_config().requires_llm
     
     def _init_llm(self) -> ChatOpenAI:
         """Initialize the LLM client."""

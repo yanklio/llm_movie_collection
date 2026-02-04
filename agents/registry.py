@@ -7,6 +7,7 @@ the dispatcher logic.
 
 from typing import Type, Dict
 from agents.base_agent import BaseAgent, AgentConfig
+from agents.movie_collector import MovieCollector
 from agents.librarian import Librarian
 from agents.critic import Critic
 
@@ -44,8 +45,3 @@ class AgentRegistry:
             agent_id: agent_class.get_config()
             for agent_id, agent_class in cls._agents.items()
         }
-
-
-# Register all available agents
-AgentRegistry.register(Librarian)
-AgentRegistry.register(Critic)

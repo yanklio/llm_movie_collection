@@ -1,36 +1,55 @@
 """
-Dispatcher Agent - State-based routing using LangGraph.
+Dispatcher Agent - Multi-Agent Orchestrator using LangGraph.
 
-Uses StateGraph to explicitly model the routing decision process:
-1. Analyze query
-2. Classify intent
-3. Select target agent
-4. Extract clean query
+Orchestrates workflows across multiple agents:
+1. Route intent
+2. Call MovieCollector to fetch data
+3. Call Librarian to store data
+4. Return results
 """
 
-from typing import TypedDict, Literal
+from typing import TypedDict, Literal, Optional
 from langgraph.graph import StateGraph, END
 
 from agents.base_agent import BaseAgent, AgentConfig
 from agents.registry import AgentRegistry
 
 
-class RoutingState(TypedDict):
-    """State for the routing graph."""
-    query: str                  # Original user query
-    query_lower: str            # Lowercase for matching
-    routing_method: str         # How we routed (pattern/keyword/llm/default)
-    target_agent_id: str        # Selected agent ID
-    clean_query: str            # Query with prefixes removed
-    confidence: float           # Routing confidence (0-1)
+class OrchestrationState(TypedDict):
+    """State for multi-agent orchestration."""
+    # Input
+    query: str                      # Original user query
+    query_lower: str                # Lowercase for matching
+    
+    # Routing
+    intent: str                     # add_movie, query_movie, fetch_movie
+    target_agent_id: str            # Primary agent to handle this
+    routing_method: str             # How we routed
+    confidence: float               # Routing confidence
+    
+    # Data flow
+    movie_data: Optional[dict]      # Data from MovieCollector
+    storage_result: Optional[dict]  # Result from Librarian
+    
+    # Output
+    result: Optional[dict]          # Final result
+    clean_query: str                # Query with prefixes removed
 
 
 class Dispatcher(BaseAgent):
     """
-    State-based routing agent using LangGraph.
+    Orchestration Agent - Coordinates multi-agent workflows.
     
-    Routes requests through a StateGraph:
-    analyze → pattern_match → keyword_match → select_agent → extract_query
+    For "Add movie" requests:
+    1. Route intent → add_movie
+    2. Call MovieCollector → fetch movie data
+    3. Call Librarian → store in vector DB
+    4. Return results
+    
+    For "Find movie" requests:
+    1. Route intent → query_movie
+    2. Call Critic → get recommendations
+    3. Return results
     """
     
     @classmethod
@@ -39,172 +58,266 @@ class Dispatcher(BaseAgent):
         return AgentConfig(
             agent_id="dispatcher",
             name="Dispatcher",
-            description="Routes user requests to appropriate agents using state-based graph",
+            description="Multi-agent orchestrator. Coordinates workflows between MovieCollector, Librarian, and Critic.",
             patterns=[],
             keywords=[],
-            capabilities=["Intent classification", "Dynamic routing", "State tracking"],
+            capabilities=[
+                "Intent classification",
+                "Multi-agent orchestration",
+                "Workflow coordination"
+            ],
             example_queries=[],
             requires_llm=False
         )
     
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, verbose: bool = False):
         """Initialize the Dispatcher."""
-        super().__init__(model)
+        super().__init__(model, verbose)
         self.agent_configs = AgentRegistry.get_configs()
         self.graph = self._build_graph()
     
     def _build_graph(self) -> StateGraph:
-        """Build the routing state graph."""
-        workflow = StateGraph(RoutingState)
+        """Build the orchestration state graph."""
+        workflow = StateGraph(OrchestrationState)
         
         # Add nodes
-        workflow.add_node("analyze", self._analyze_query)
-        workflow.add_node("pattern_match", self._pattern_match)
-        workflow.add_node("keyword_match", self._keyword_match)
-        workflow.add_node("select_agent", self._select_agent)
-        workflow.add_node("extract_query", self._extract_query)
+        workflow.add_node("classify_intent", self._classify_intent)
+        workflow.add_node("fetch_movie_data", self._fetch_movie_data)
+        workflow.add_node("store_movie", self._store_movie)
+        workflow.add_node("query_movies", self._query_movies)
+        workflow.add_node("finalize", self._finalize)
         
-        # Define flow
-        workflow.set_entry_point("analyze")
-        workflow.add_edge("analyze", "pattern_match")
+        # Entry point
+        workflow.set_entry_point("classify_intent")
         
-        # Conditional: If pattern matched, go to extract_query, else try keywords
+        # Routing based on intent
         workflow.add_conditional_edges(
-            "pattern_match",
-            lambda state: "found" if state.get("target_agent_id") else "not_found",
+            "classify_intent",
+            lambda state: state["intent"],
             {
-                "found": "extract_query",
-                "not_found": "keyword_match"
+                "add_movie": "fetch_movie_data",
+                "query_movie": "query_movies",
+                "fetch_movie": "fetch_movie_data",
             }
         )
         
-        # Conditional: If keyword matched, go to extract_query, else select default
-        workflow.add_conditional_edges(
-            "keyword_match",
-            lambda state: "found" if state.get("target_agent_id") else "not_found",
-            {
-                "found": "extract_query",
-                "not_found": "select_agent"
-            }
-        )
+        # Add movie workflow: fetch → store → finalize
+        workflow.add_edge("fetch_movie_data", "store_movie")
+        workflow.add_edge("store_movie", "finalize")
         
-        workflow.add_edge("select_agent", "extract_query")
-        workflow.add_edge("extract_query", END)
+        # Query workflow: query → finalize
+        workflow.add_edge("query_movies", "finalize")
+        
+        workflow.add_edge("finalize", END)
         
         return workflow.compile()
     
     def process(self, query: str) -> dict:
         """
-        Route a query using the state graph.
+        Orchestrate a multi-agent workflow.
         
         Args:
             query: User's request
             
         Returns:
-            Dictionary with routing decision
+            Dictionary with results
         """
         # Initialize state
-        initial_state: RoutingState = {
+        initial_state: OrchestrationState = {
             "query": query,
             "query_lower": query.lower().strip(),
-            "routing_method": "unknown",
+            "intent": "unknown",
             "target_agent_id": "",
+            "routing_method": "unknown",
+            "confidence": 0.0,
+            "movie_data": None,
+            "storage_result": None,
+            "result": None,
             "clean_query": query,
-            "confidence": 0.0
         }
         
-        # Execute graph
-        result = self.graph.invoke(initial_state)
+        # Execute orchestration graph
+        result_state = self.graph.invoke(initial_state)
         
-        # Log routing decision
-        config = self.agent_configs.get(result["target_agent_id"])
-        if config:
-            self.log_success(f"Routed to: {config.name} ({result['routing_method']}, confidence: {result['confidence']:.2f})")
-        
-        return {
-            "agent_id": result["target_agent_id"],
-            "query": result["clean_query"],
-            "routing_method": result["routing_method"],
-            "confidence": result["confidence"]
-        }
+        return result_state.get("result", {})
     
-    def _analyze_query(self, state: RoutingState) -> RoutingState:
-        """Analyze the query (preprocessing)."""
-        # Just normalize - already done in initial state
-        return state
-    
-    def _pattern_match(self, state: RoutingState) -> RoutingState:
-        """Try pattern-based routing."""
+    def _classify_intent(self, state: OrchestrationState) -> OrchestrationState:
+        """Classify user intent and route accordingly."""
         query_lower = state["query_lower"]
         
-        for agent_id, config in self.agent_configs.items():
-            for pattern in config.patterns:
-                if query_lower.startswith(pattern):
-                    state["target_agent_id"] = agent_id
-                    state["routing_method"] = "pattern"
-                    state["confidence"] = 1.0  # Pattern match is very confident
-                    self.log(f"Pattern match: '{pattern}' → {config.name}")
-                    return state
+        # Pattern matching for intents
+        add_patterns = ["add:", "add ", "ingest:", "ingest ", "store:", "store "]
+        query_patterns = ["find:", "find ", "query:", "query ", "search:", "search "]
+        fetch_patterns = ["fetch:", "fetch ", "lookup:", "lookup "]
         
-        # No pattern match
-        return state
-    
-    def _keyword_match(self, state: RoutingState) -> RoutingState:
-        """Try keyword-based routing."""
-        query_lower = state["query_lower"]
-        
-        best_agent = None
-        best_score = 0
-        
-        for agent_id, config in self.agent_configs.items():
-            score = sum(1 for keyword in config.keywords if keyword in query_lower)
-            if score > best_score:
-                best_score = score
-                best_agent = agent_id
-        
-        if best_agent and best_score > 0:
-            config = self.agent_configs[best_agent]
-            state["target_agent_id"] = best_agent
-            state["routing_method"] = "keyword"
-            state["confidence"] = min(best_score / 3.0, 1.0)  # Normalize score
-            self.log(f"Keyword match: score={best_score} → {config.name}")
-            return state
-        
-        # No keyword match
-        return state
-    
-    def _select_agent(self, state: RoutingState) -> RoutingState:
-        """Select default agent when no match found."""
-        # Default to critic for movie queries
-        default_agent = "movie_critic"
-        config = self.agent_configs.get(default_agent)
-        
-        state["target_agent_id"] = default_agent
-        state["routing_method"] = "default"
-        state["confidence"] = 0.3  # Low confidence - just a guess
-        
-        if config:
-            self.log(f"No match found, defaulting to: {config.name}")
-        
-        return state
-    
-    def _extract_query(self, state: RoutingState) -> RoutingState:
-        """Extract clean query by removing routing prefixes."""
-        agent_id = state["target_agent_id"]
-        query = state["query"]
-        query_lower = state["query_lower"]
-        
-        config = self.agent_configs.get(agent_id)
-        if not config:
-            state["clean_query"] = query.strip()
-            return state
-        
-        # Try to remove pattern prefixes
-        for pattern in config.patterns:
+        # Check patterns
+        for pattern in add_patterns:
             if query_lower.startswith(pattern):
-                state["clean_query"] = query[len(pattern):].strip()
+                state["intent"] = "add_movie"
+                state["routing_method"] = "pattern"
+                state["confidence"] = 1.0
+                state["clean_query"] = state["query"][len(pattern):].strip()
+                self.log(f"Intent: add_movie (pattern: '{pattern}')")
                 return state
         
-        # No prefix to remove
-        state["clean_query"] = query.strip()
+        for pattern in fetch_patterns:
+            if query_lower.startswith(pattern):
+                state["intent"] = "fetch_movie"
+                state["routing_method"] = "pattern"
+                state["confidence"] = 1.0
+                state["clean_query"] = state["query"][len(pattern):].strip()
+                self.log(f"Intent: fetch_movie (pattern: '{pattern}')")
+                return state
+        
+        for pattern in query_patterns:
+            if query_lower.startswith(pattern):
+                state["intent"] = "query_movie"
+                state["routing_method"] = "pattern"
+                state["confidence"] = 1.0
+                state["clean_query"] = state["query"][len(pattern):].strip()
+                self.log(f"Intent: query_movie (pattern: '{pattern}')")
+                return state
+        
+        # Keyword-based fallback
+        if any(kw in query_lower for kw in ["add", "store", "ingest"]):
+            state["intent"] = "add_movie"
+            state["routing_method"] = "keyword"
+            state["confidence"] = 0.5
+            self.log("Intent: add_movie (keyword match)")
+        else:
+            state["intent"] = "query_movie"
+            state["routing_method"] = "default"
+            state["confidence"] = 0.3
+            self.log("Intent: query_movie (default)")
+        
+        return state
+    
+    def _fetch_movie_data(self, state: OrchestrationState) -> OrchestrationState:
+        """Call MovieCollector to fetch movie data."""
+        self.log_success("Step 1: Fetching movie data via MovieCollector...")
+        
+        # Get MovieCollector agent
+        collector_class = AgentRegistry.get_agent("movie_collector")
+        if not collector_class:
+            state["movie_data"] = {"error": "MovieCollector not available"}
+            return state
+        
+        collector = collector_class(verbose=self.verbose)
+        
+        if self.verbose:
+            self.log(f"[VERBOSE] Calling MovieCollector.fetch_movies('{state['clean_query']}')")
+        
+        # MovieCollector fetches actual movie data from API
+        try:
+            # Parse query to determine search method
+            query = state['clean_query'].lower()
+            movies = []
+            
+            # Heuristic: check for person names (common patterns)
+            # This is simplified - in production, could use NER
+            person_keywords = ["movies", "films", "filmography"]
+            if any(kw in query for kw in person_keywords):
+                # Try as person search
+                person_name = query
+                for kw in person_keywords:
+                    person_name = person_name.replace(kw, "").strip()
+                
+                if person_name:
+                    results = collector.search_by_person(person_name)
+                    movies = results if isinstance(results, list) else []
+            
+            # If no results, try title search
+            if not movies:
+                result = collector.search_by_title(query)
+                if result:
+                    movies = [result]
+            
+            # If still no results, try keyword search
+            if not movies:
+                results = collector.search_by_keyword(query)
+                movies = results if isinstance(results, list) else []
+            
+            state["movie_data"] = {
+                "movies": movies,
+                "count": len(movies),
+                "query": state['clean_query']
+            }
+            
+            self.log_success(f"✓ Fetched {len(movies)} movie(s)")
+            
+        except Exception as e:
+            self.log_error(f"✗ Fetch failed: {e}")
+            state["movie_data"] = {"error": str(e), "movies": []}
+        
+        return state
+    
+    def _store_movie(self, state: OrchestrationState) -> OrchestrationState:
+        """Call Librarian to store movie data."""
+        movie_data = state.get("movie_data", {})
+        movies = movie_data.get("movies", [])
+        
+        if not movies:
+            state["storage_result"] = {"error": "No movie data to store", "successful": [], "failed": []}
+            return state
+        
+        self.log_success(f"Step 2: Storing {len(movies)} movie(s) via Librarian...")
+        
+        # Get Librarian agent
+        librarian_class = AgentRegistry.get_agent("movie_librarian")
+        if not librarian_class:
+            state["storage_result"] = {"error": "Librarian not available"}
+            return state
+        
+        librarian = librarian_class(verbose=self.verbose)
+        
+        if self.verbose:
+            self.log(f"[VERBOSE] Calling Librarian.store_movies({len(movies)} movies)")
+        
+        # Call Librarian to store the fetched movie data
+        result = librarian.store_movies(movies)
+        state["storage_result"] = result
+        
+        successful = result.get("successful", [])
+        failed = result.get("failed", [])
+        self.log_success(f"✓ Stored {len(successful)} movies")
+        if failed:
+            self.log(f"✗ Failed: {len(failed)} movies")
+        
+        return state
+    
+    def _query_movies(self, state: OrchestrationState) -> OrchestrationState:
+        """Call Critic for movie recommendations."""
+        self.log_success("Querying movies via Critic...")
+        
+        # Get Critic agent
+        critic_class = AgentRegistry.get_agent("movie_critic")
+        if not critic_class:
+            state["result"] = {"error": "Critic not available"}
+            return state
+        
+        critic = critic_class()
+        result = critic.process(state["clean_query"])
+        state["result"] = result
+        
+        return state
+    
+    def _finalize(self, state: OrchestrationState) -> OrchestrationState:
+        """Finalize and prepare result."""
+        if state["intent"] == "add_movie":
+            # Return storage result
+            state["result"] = {
+                "intent": "add_movie",
+                "movie_data": state.get("movie_data"),
+                "storage_result": state.get("storage_result"),
+                "workflow": "MovieCollector → Librarian"
+            }
+        elif state["intent"] == "fetch_movie":
+            # Return fetch result only
+            state["result"] = {
+                "intent": "fetch_movie",
+                "movie_data": state.get("movie_data"),
+                "workflow": "MovieCollector"
+            }
+        # query_movie result already set in _query_movies
+        
         return state

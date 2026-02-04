@@ -2,16 +2,17 @@
 """
 Movie RAG System - Unified CLI
 
-Extensible multi-agent system with automatic routing.
+Extensible multi-agent system with orchestrated workflows.
 
 Usage:
-    # Automatic routing
-    python main.py "Add Inception"
-    python main.py "Find dark sci-fi movies"
+    # Automatic routing with orchestration
+    python main.py "Add Inception"          # MovieCollector → Librarian
+    python main.py "Find dark sci-fi"       # Critic
+    python main.py "Fetch Brad Pitt movies" # MovieCollector only
     
     # Direct agent selection
     python main.py --agent movie_librarian "Christopher Nolan movies"
-    python main.py --agent movie_critic "emotional Tom Hanks movie"
+    python main.py --agent movie_critic "emotional drama"
     
     # List available agents
     python main.py --list-agents
@@ -30,15 +31,15 @@ console = Console()
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Movie RAG System - Extensible Multi-Agent Architecture",
+        description="Movie RAG System - Orchestrated Multi-Agent Architecture",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Automatic routing
-  python main.py "Add Inception"
-  python main.py "Find dark sci-fi about dreams"
+  # Automatic orchestration
+  python main.py "Add Inception"          # MovieCollector → Librarian 
+  python main.py "Find dark sci-fi"       # Critic
   
-  # Direct agent selection (bypass router)
+  # Direct agent selection (bypass orchestration)
   python main.py --agent movie_librarian "Tom Hanks movies"
   python main.py --agent movie_critic "emotional drama"
   
@@ -56,7 +57,7 @@ Examples:
     parser.add_argument(
         "--agent",
         "-a",
-        help=f"Directly select agent by ID (bypasses router). Available: {', '.join(AgentRegistry.get_all_agents().keys())}"
+        help=f"Directly select agent by ID (bypasses orchestration). Available: {', '.join(AgentRegistry.get_all_agents().keys())}"
     )
     
     parser.add_argument(
@@ -72,9 +73,15 @@ Examples:
         help="List all available agents and their capabilities"
     )
     
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose mode to see agent reasoning and tool calls"
+    )
+    
     args = parser.parse_args()
     
-    # List agents
     if args.list_agents:
         list_agents()
         return
@@ -89,9 +96,9 @@ Examples:
     console.print(f"\n[bold cyan]Movie RAG System[/bold cyan]")
     console.print(f"[dim]Query: {query}[/dim]\n")
     
-    # Direct agent selection or auto-routing
+    # Direct agent selection or auto-orchestration
     if args.agent:
-        # Direct selection
+        # Direct selection (bypass orchestration)
         agent_class = AgentRegistry.get_agent(args.agent)
         if not agent_class:
             console.print(f"[red]Error:[/red] Unknown agent '{args.agent}'")
@@ -104,28 +111,44 @@ Examples:
         
         run_agent(agent_class, query, args.model)
     else:
-        # Auto-routing
-        console.print("[yellow]Mode:[/yellow] Auto-routing via Dispatcher")
+        # Auto-orchestration via Dispatcher
+        console.print("[yellow]Mode:[/yellow] Orchestrated Workflow")
         console.print("[dim]" + "="*60 + "[/dim]\n")
         
-        dispatcher = Dispatcher(model=args.model)
-        routing = dispatcher.process(query)
-        
-        agent_id = routing["agent_id"]
-        clean_query = routing["query"]
+        dispatcher = Dispatcher(model=args.model, verbose=args.verbose)
+        result = dispatcher.process(query)
         
         console.print()
         
-        agent_class = AgentRegistry.get_agent(agent_id)
-        if not agent_class:
-            console.print(f"[red]Error:[/red] Routing failed")
-            sys.exit(1)
+        # Display results based on orchestration flow
+        intent = result.get("intent", "unknown")
         
-        run_agent(agent_class, clean_query, args.model)
+        if intent == "add_movie":
+            # MovieCollector → Librarian workflow
+            console.print(f"[cyan]Workflow:[/cyan] {result.get('workflow', 'unknown')}\n")
+            storage_result = result.get("storage_result", {})
+            display_librarian_results(storage_result)
+            
+        elif intent == "fetch_movie":
+            # MovieCollector only
+            console.print(f"[cyan]Workflow:[/cyan] {result.get('workflow', 'unknown')}\n")
+            movie_data = result.get("movie_data", {})
+            console.print(f"[bold]Movie Data:[/bold]")
+            console.print(movie_data)
+            console.print()
+            
+        elif intent == "query_movie":
+            # Critic workflow
+            console.print(f"[cyan]Workflow:[/cyan] Critic\n")
+            display_critic_results(result)
+            
+        else:
+            console.print(f"[red]Unknown intent:[/red] {intent}")
+            console.print(result)
 
 
 def run_agent(agent_class, query: str, model: str | None = None):
-    """Execute an agent with a query."""
+    """Execute an agent directly (no orchestration)."""
     config = agent_class.get_config()
     agent = agent_class(model=model)
     
@@ -136,6 +159,10 @@ def run_agent(agent_class, query: str, model: str | None = None):
         display_librarian_results(result)
     elif config.agent_id == "movie_critic":
         display_critic_results(result)
+    elif config.agent_id == "movie_collector":
+        console.print(f"[bold]Collector Result:[/bold]")
+        console.print(result)
+        console.print()
     else:
         console.print(result)
 
@@ -145,7 +172,7 @@ def display_librarian_results(result: dict):
     successful = result.get("successful", [])
     failed = result.get("failed", [])
     
-    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"[bold]Storage Summary:[/bold]")
     console.print(f"  ✓ Added: {len(successful)} movies")
     if failed:
         console.print(f"  ✗ Failed: {len(failed)} movies")
@@ -154,12 +181,17 @@ def display_librarian_results(result: dict):
         console.print(f"\n[green]Successfully added:[/green]")
         for movie in successful:
             console.print(f"  • {movie.title} ({movie.year})")
+    
+    console.print()
 
 
 def display_critic_results(result: dict):
     """Display Critic agent results."""
     response = result.get("response", "")
-    console.print(response)
+    if response:
+        console.print(response)
+    else:
+        console.print("[yellow]No recommendations found[/yellow]")
     console.print()
 
 

@@ -76,10 +76,11 @@ class Critic(BaseAgent):
         self,
         model: str | None = None,
         vector_store: VectorStore | None = None,
+        verbose: bool = False,
         top_k: int = 5,
     ):
         """Initialize the Critic."""
-        super().__init__(model)
+        super().__init__(model, verbose)
         self.vector_store = vector_store or VectorStore()
         self.top_k = top_k
     
