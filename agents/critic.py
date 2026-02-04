@@ -9,7 +9,7 @@ Responsibilities:
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from agents.base import BaseAgent
+from agents.base_agent import BaseAgent, AgentConfig
 from storage.vector_store import VectorStore
 
 
@@ -48,6 +48,30 @@ class Critic(BaseAgent):
     3. Synthesis: Generate conversational response grounded in retrieved context
     """
     
+    @classmethod
+    def get_config(cls) -> AgentConfig:
+        """Return agent configuration for routing."""
+        return AgentConfig(
+            agent_id="movie_critic",
+            name="Movie Critic",
+            description="Intelligent movie recommendation agent. Provides personalized recommendations based on mood, genre, or themes.",
+            patterns=["find:", "find ", "query:", "query ", "search:", "search ", "recommend:", "recommend "],
+            keywords=["find", "query", "search", "recommend", "suggest", "want", "looking for"],
+            capabilities=[
+                "Query expansion for vague requests",
+                "Semantic similarity search",
+                "Personalized movie recommendations",
+                "Mood-based suggestions"
+            ],
+            example_queries=[
+                "Find dark sci-fi about dreams",
+                "I want something emotional starring Tom Hanks",
+                "Recommend action movies from the 90s",
+                "Looking for mind-bending thrillers"
+            ],
+            requires_llm=True
+        )
+    
     def __init__(
         self,
         model: str | None = None,
@@ -59,9 +83,21 @@ class Critic(BaseAgent):
         self.vector_store = vector_store or VectorStore()
         self.top_k = top_k
     
-    def requires_llm(self) -> bool:
-        """Critic needs LLM for query expansion and synthesis."""
-        return True
+    def process(self, query: str) -> dict:
+        """
+        Process a query (BaseAgent interface).
+        
+        Args:
+            query: User's request
+            
+        Returns:
+            Dictionary with 'response' and metadata
+        """
+        response = self.query(query)
+        return {
+            "response": response,
+            "agent": self.get_config().agent_id
+        }
     
     def query(self, user_query: str) -> str:
         """

@@ -13,7 +13,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
-from agents.base import BaseAgent
+from agents.base_agent import BaseAgent, AgentConfig
 from tools.movie_api import MovieAPITool
 from tools.movie_info import MovieInfo
 from storage.vector_store import VectorStore
@@ -76,10 +76,34 @@ class Librarian(BaseAgent):
     Ingestion Agent - Uses LLM with MCP tools to enrich and store movie data.
     
     Process:
-    1. LLM uses `search_movie` tool to fetch from OMDb
-    2. LLM generates retrieval-optimized summary
-    3. Agent stores in VectorStore with enriched metadata
+    1. LLM uses `search_movie` tool to fetch from TMDB
+    2. LLM generates list of movies to add
+    3. Agent stores in VectorStore with metadata
     """
+    
+    @classmethod
+    def get_config(cls) -> AgentConfig:
+        """Return agent configuration for routing."""
+        return AgentConfig(
+            agent_id="movie_librarian",
+            name="Movie Librarian",
+            description="Autonomous movie ingestion agent. Searches TMDB and adds movies to the knowledge base.",
+            patterns=["add:", "add ", "ingest:", "ingest ", "store:", "store "],
+            keywords=["add", "ingest", "store", "save", "import"],
+            capabilities=[
+                "Search movies by title, actor, or director",
+                "Add movies to vector database",
+                "Batch movie ingestion",
+                "Actor/director filmography search"
+            ],
+            example_queries=[
+                "Add Inception",
+                "Add Tom Hanks movies",
+                "Add Christopher Nolan films",
+                "Store all Matrix movies"
+            ],
+            requires_llm=True
+        )
     
     def __init__(
         self,
@@ -196,6 +220,22 @@ Plot: {movie.plot}"""
         
         return [search_movie_by_title, search_movies, search_person]
     
+    def process(self, query: str) -> dict:
+        """
+        Process a query (BaseAgent interface).
+        
+        Args:
+            query: User's request
+            
+        Returns:
+            Dictionary with 'successful' and 'failed' lists
+        """
+        successful, failed = self.process_request(query)
+        return {
+            "successful": successful,
+            "failed": failed,
+            "agent": self.get_config().agent_id
+        }
     
     def process_request(self, request: str) -> tuple[list[MovieInfo], list[str]]:
         """

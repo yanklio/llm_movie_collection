@@ -1,152 +1,136 @@
 """
-Dispatcher Agent - Intent classification and routing.
+Dispatcher Agent - Dynamic intent routing using agent registry.
 
-Responsibilities:
-- Analyze user intent (add movies vs. query for recommendations)
-- Hybrid routing: Deterministic patterns + LLM classification
-- Route requests to Librarian or Critic
+Automatically routes requests to appropriate agents based on their
+self-described patterns and keywords.
 """
 
-from enum import Enum
-
-from agents.base import BaseAgent
-
-
-class Intent(Enum):
-    """User intent types."""
-    ADD_MOVIE = "add"        # Add movies to the knowledge base
-    QUERY_MOVIES = "query"   # Query for movie recommendations
-    UNKNOWN = "unknown"
+from agents.base_agent import BaseAgent, AgentConfig
+from agents.registry import AgentRegistry
 
 
 class Dispatcher(BaseAgent):
     """
-    Routing Agent - Classifies user intent and determines which agent to use.
+    Dynamic routing agent that uses the agent registry.
     
-    Uses hybrid approach:
-    1. Deterministic: Direct command patterns (add:, find:, query:)
-    2. Semantic: LLM classification for natural language
+    Routes based on:
+    1. Deterministic patterns (e.g., "add:", "find:")
+    2. Keyword heuristics
+    3. Optional LLM classification (future)
     """
+    
+    @classmethod
+    def get_config(cls) -> AgentConfig:
+        """Return dispatcher configuration."""
+        return AgentConfig(
+            agent_id="dispatcher",
+            name="Dispatcher",
+            description="Routes user requests to appropriate agents",
+            patterns=[],
+            keywords=[],
+            capabilities=["Intent classification", "Dynamic routing"],
+            example_queries=[],
+            requires_llm=False  # Can work without LLM using patterns
+        )
     
     def __init__(self, model: str | None = None):
         """Initialize the Dispatcher."""
         super().__init__(model)
-        
-        # Deterministic patterns for bypassing LLM
-        self.add_patterns = [
-            "add:", "add ", "ingest:", "ingest ",
-            "store:", "store ", "save:", "save "
-        ]
-        self.query_patterns = [
-            "find:", "find ", "query:", "query ",
-            "search:", "search ", "recommend:", "recommend ",
-            "suggest:", "suggest ", "show:", "show "
-        ]
+        self.agent_configs = AgentRegistry.get_configs()
     
-    def requires_llm(self) -> bool:
-        """Dispatcher can work without LLM using deterministic routing."""
-        return False
-    
-    def route(self, user_input: str) -> Intent:
+    def process(self, query: str) -> dict:
         """
-        Classify user intent and determine routing.
+        Route a query to the appropriate agent.
+        
+        Args:
+            query: User's request
+            
+        Returns:
+            Dictionary with routing decision
+        """
+        agent_id = self.route(query)
+        clean_query = self.extract_query(query, agent_id)
+        
+        return {
+            "agent_id": agent_id,
+            "query": clean_query,
+            "routing_method": "pattern"  # or "keyword" or "llm"
+        }
+    
+    def route(self, user_input: str) -> str | None:
+        """
+        Determine which agent should handle the request.
         
         Args:
             user_input: Raw user input
             
         Returns:
-            Intent enum (ADD_MOVIE or QUERY_MOVIES)
+            Agent ID or None if no match
         """
         user_lower = user_input.lower().strip()
         
-        # 1. Deterministic routing (fast path)
-        for pattern in self.add_patterns:
-            if user_lower.startswith(pattern):
-                self.log(f"📌 Deterministic routing → LIBRARIAN (pattern: '{pattern}')")
-                return Intent.ADD_MOVIE
+        # 1. Pattern-based routing (highest priority)
+        for agent_id, config in self.agent_configs.items():
+            for pattern in config.patterns:
+                if user_lower.startswith(pattern):
+                    self.log_success(f"Pattern match → {config.name} ('{pattern}')")
+                    return agent_id
         
-        for pattern in self.query_patterns:
-            if user_lower.startswith(pattern):
-                self.log(f"📌 Deterministic routing → CRITIC (pattern: '{pattern}')")
-                return Intent.QUERY_MOVIES
+        # 2. Keyword-based routing
+        best_match = None
+        best_score = 0
         
-        # 2. Heuristic routing (keyword-based)
-        add_keywords = ["add", "ingest", "store", "save", "import"]
-        query_keywords = ["find", "recommend", "suggest", "want", "looking for", "show me"]
+        for agent_id, config in self.agent_configs.items():
+            score = sum(1 for keyword in config.keywords if keyword in user_lower)
+            if score > best_score:
+                best_score = score
+                best_match = agent_id
         
-        has_add_keyword = any(keyword in user_lower for keyword in add_keywords)
-        has_query_keyword = any(keyword in user_lower for keyword in query_keywords)
+        if best_match and best_score > 0:
+            config = self.agent_configs[best_match]
+            self.log_success(f"Keyword match → {config.name} (score: {best_score})")
+            return best_match
         
-        if has_add_keyword and not has_query_keyword:
-            self.log("🔍 Heuristic routing → LIBRARIAN (add keyword detected)")
-            return Intent.ADD_MOVIE
-        
-        if has_query_keyword and not has_add_keyword:
-            self.log("🔍 Heuristic routing → CRITIC (query keyword detected)")
-            return Intent.QUERY_MOVIES
-        
-        # 3. Semantic routing (LLM classification) - only if both or neither keywords
+        # 3. LLM-based routing (future enhancement)
         if self.llm:
-            self.log("🤖 Using LLM for intent classification...")
-            return self._llm_classify(user_input)
+            return self._llm_route(user_input)
         
-        # 4. Default fallback: assume query
-        self.log("⚠️  No clear intent, defaulting to CRITIC")
-        return Intent.QUERY_MOVIES
+        # 4. Default fallback
+        self.log_error("No clear match, defaulting to critic")
+        return "movie_critic"  # Default to query agent
     
-    def _llm_classify(self, user_input: str) -> Intent:
+    def extract_query(self, user_input: str, agent_id: str | None = None) -> str:
         """
-        Use LLM to classify ambiguous user intent.
-        """
-        prompt = f"""Classify the user's intent into one of these categories:
-
-1. **ADD_MOVIE**: User wants to add movies to the database
-   Examples: "Add Inception", "Store The Matrix", "I want to add Tom Hanks movies"
-   
-2. **QUERY_MOVIES**: User wants recommendations or to search existing movies  
-   Examples: "Find me a dark sci-fi", "I want something like Inception", "Show me action movies"
-
-User input: "{user_input}"
-
-Respond with ONLY one word: ADD_MOVIE or QUERY_MOVIES"""
-
-        try:
-            response = self.llm.invoke(prompt)
-            result = response.content.strip().upper()
-            
-            if "ADD_MOVIE" in result or "ADD" in result:
-                self.log_success("LLM classified as: ADD_MOVIE → LIBRARIAN")
-                return Intent.ADD_MOVIE
-            elif "QUERY_MOVIES" in result or "QUERY" in result:
-                self.log_success("LLM classified as: QUERY_MOVIES → CRITIC")
-                return Intent.QUERY_MOVIES
-            else:
-                self.log_error(f"Unexpected LLM response: {result}, defaulting to CRITIC")
-                return Intent.QUERY_MOVIES
-                
-        except Exception as e:
-            self.log_error(f"LLM classification failed: {e}, defaulting to CRITIC")
-            return Intent.QUERY_MOVIES
-    
-    def extract_query(self, user_input: str) -> str:
-        """
-        Extract the actual query from user input, removing command prefixes.
+        Remove routing prefixes from the query.
         
         Args:
             user_input: Raw user input
+            agent_id: Target agent ID
             
         Returns:
-            Clean query string
+            Clean query
         """
+        if not agent_id:
+            return user_input.strip()
+        
+        config = self.agent_configs.get(agent_id)
+        if not config:
+            return user_input.strip()
+        
         user_lower = user_input.lower().strip()
         
-        # Remove deterministic prefixes
-        all_patterns = self.add_patterns + self.query_patterns
-        for pattern in all_patterns:
+        # Remove pattern prefixes
+        for pattern in config.patterns:
             if user_lower.startswith(pattern):
-                # Remove the pattern prefix
-                query = user_input[len(pattern):].strip()
-                return query
+                return user_input[len(pattern):].strip()
         
-        # No prefix found, return as-is
         return user_input.strip()
+    
+    def _llm_route(self, user_input: str) -> str:
+        """
+        Use LLM for routing (future enhancement).
+        
+        This could be expanded to handle ambiguous cases.
+        """
+        # TODO: Implement LLM-based routing
+        return "movie_critic"
