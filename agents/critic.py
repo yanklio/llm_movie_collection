@@ -1,12 +1,3 @@
-"""
-Critic Agent - Retrieval and synthesis specialist.
-
-Responsibilities:
-- Query expansion: Transform vague moods into searchable concepts
-- Similarity search: Retrieve relevant movies from VectorStore
-- Grounded synthesis: Generate conversational responses based only on retrieved context
-"""
-
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from agents.base_agent import BaseAgent, AgentConfig
@@ -112,11 +103,9 @@ class Critic(BaseAgent):
         """
         self.log(f"Processing query: {user_query}")
         
-        # Step 1: Expand query for better retrieval
         expanded_query = self._expand_query(user_query)
         self.log(f"Expanded query: {expanded_query}")
         
-        # Step 2: Similarity search
         results = self.vector_store.search(expanded_query, top_k=self.top_k)
         
         if not results:
@@ -125,7 +114,6 @@ class Critic(BaseAgent):
         
         self.log_success(f"Found {len(results)} relevant movies")
         
-        # Step 3: Synthesize grounded response
         response = self._synthesize(user_query, results)
         
         return response
@@ -139,7 +127,6 @@ class Critic(BaseAgent):
         - "something thrilling" → "suspense, tension, mystery, thriller"
         """
         if not self.llm:
-            # Fallback: return as-is
             return user_query
         
         prompt = f"""Expand this user query into searchable movie concepts.
@@ -177,10 +164,8 @@ Expanded query:"""
             Conversational recommendation response
         """
         if not self.llm:
-            # Fallback: simple list
             return self._fallback_response(results)
         
-        # Build context from retrieved movies
         context = self._build_context(results)
         
         messages = [

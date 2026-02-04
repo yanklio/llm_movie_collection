@@ -141,6 +141,31 @@ Examples:
             # Critic workflow
             console.print(f"[cyan]Workflow:[/cyan] Critic\n")
             display_critic_results(result)
+        
+        elif intent == "check_movie":
+            # Librarian check workflow
+            console.print(f"[cyan]Workflow:[/cyan] Librarian (Check)\n")
+            exists = result.get("exists", False)
+            
+            if exists:
+                movie = result.get("movie", {})
+                console.print(f"[green]✓ Yes![/green] {movie.get('title', 'Unknown')} ({movie.get('year', 'N/A')}) is in your watchlist")
+                console.print(f"[dim]Genre: {movie.get('genre', 'N/A')} | Rating: {movie.get('rating', 'N/A')}[/dim]")
+            else:
+                message = result.get("message", "Movie not found")
+                console.print(f"[yellow]✗ No.[/yellow] {message}")
+        
+        elif intent == "delete_movie":
+            # Librarian delete workflow
+            console.print(f"[cyan]Workflow:[/cyan] Librarian (Delete)\n")
+            success = result.get("success", False)
+            message = result.get("message", "Unknown")
+            
+            if success:
+                movie = result.get("movie", {})
+                console.print(f"[green]✓ Deleted:[/green] {movie.get('title', 'Unknown')} ({movie.get('year', 'N/A')})")
+            else:
+                console.print(f"[red]✗ Failed:[/red] {message}")
             
         else:
             console.print(f"[red]Unknown intent:[/red] {intent}")

@@ -1,14 +1,3 @@
-"""
-Base Agent Architecture
-
-Defines the core agent interface and configuration structure.
-Each agent is self-describing with:
-- Unique ID
-- Intent patterns for routing
-- Capability description
-- Example queries
-"""
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -29,14 +18,14 @@ class AgentConfig:
     This makes agents self-describing and allows the dispatcher
     to route based on patterns without hard-coding logic.
     """
-    agent_id: str                    # Unique identifier (e.g., "movie_librarian")
-    name: str                        # Human-readable name (e.g., "Movie Librarian")
-    description: str                 # What this agent does
-    patterns: list[str]              # Routing patterns (e.g., ["add:", "ingest:"])
-    keywords: list[str]              # Keyword triggers (e.g., ["add", "store"])
-    capabilities: list[str]          # What it can do
-    example_queries: list[str]       # Example usage
-    requires_llm: bool = True        # Whether it needs LLM
+    agent_id: str                    
+    name: str                        
+    description: str                 
+    patterns: list[str]              
+    keywords: list[str]              
+    capabilities: list[str]          
+    example_queries: list[str]       
+    requires_llm: bool = True        
 
 
 class BaseAgent(ABC):
@@ -94,7 +83,6 @@ class BaseAgent(ABC):
         """
         pass
     
-    # Logging helpers
     def log(self, message: str, style: str = "dim"):
         """Log a message to the console."""
         console.print(f"[{style}]{message}[/{style}]")

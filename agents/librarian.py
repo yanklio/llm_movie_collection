@@ -33,7 +33,9 @@ class Librarian(BaseAgent):
             capabilities=[
                 "Store movie metadata",
                 "Create searchable summaries",
-                "Manage vector database"
+                "Manage vector database",
+                "Check if movie exists in watchlist",
+                "Delete movies from watchlist"
             ],
             example_queries=[
                 "Add Inception",
@@ -56,11 +58,41 @@ class Librarian(BaseAgent):
         """
         Process a storage request.
         
-        NOTE: This is kept for compatibility but should not be used.
-        Use store_movies() directly instead.
+        Handles:
+        - Check queries: "Do I have Inception?", "Is The Matrix in my watchlist?"
+        - Delete queries: "Remove Inception", "Delete The Matrix"
+        
+        Args:
+            query: Natural language query
+            
+        Returns:
+            Dictionary with operation result
         """
+        query_lower = query.lower()
+        
+        # Check if it's a "check" query
+        check_patterns = ["do i have", "is ", " in ", "already have", "watchlist"]
+        if any(pattern in query_lower for pattern in check_patterns):
+            # Extract movie title (simple heuristic)
+            title = query
+            for pattern in ["do i have ", "is ", " in my watchlist", " in watchlist", "already have "]:
+                title = title.replace(pattern, "").strip()
+            title = title.rstrip("?").strip()
+            
+            return self.check_movie(title)
+        
+        # Check if it's a "delete" query
+        delete_patterns = ["remove", "delete", "drop"]
+        if any(pattern in query_lower for pattern in delete_patterns):
+            # Extract movie title
+            title = query
+            for pattern in ["remove ", "delete ", "drop "]:
+                title = title.replace(pattern, "").strip()
+            
+            return self.delete_movie(title)
+        
         return {
-            "message": "Use store_movies() with movie data",
+            "message": "Use store_movies() for adding, check_movie() for checking, delete_movie() for removing",
             "agent": self.get_config().agent_id
         }
     
@@ -108,6 +140,95 @@ class Librarian(BaseAgent):
             "failed": failed,
             "agent": self.get_config().agent_id
         }
+    
+    def check_movie(self, title: str) -> dict:
+        """
+        Check if a movie is already in the watchlist.
+        
+        Args:
+            title: Movie title to check
+            
+        Returns:
+            Dictionary with existence status and movie info if found
+        """
+        self.log(f"Checking for: {title}")
+        
+        # Search in vector store
+        results = self.vector_store.search(title, top_k=1)
+        
+        if results and len(results) > 0:
+            movie = results[0]
+            metadata = movie.get("metadata", {})
+            self.log_success(f"✓ Found: {metadata.get('title', 'Unknown')} ({metadata.get('year', 'N/A')})")
+            
+            return {
+                "exists": True,
+                "movie": {
+                    "title": metadata.get("title", "Unknown"),
+                    "year": metadata.get("year", "N/A"),
+                    "genre": metadata.get("genre", "N/A"),
+                    "rating": metadata.get("rating", "N/A")
+                },
+                "agent": self.get_config().agent_id
+            }
+        else:
+            self.log(f"✗ Not found: {title}")
+            return {
+                "exists": False,
+                "message": f"'{title}' is not in your watchlist",
+                "agent": self.get_config().agent_id
+            }
+    
+    def delete_movie(self, title: str) -> dict:
+        """
+        Delete a movie from the watchlist.
+        
+        Args:
+            title: Movie title to delete
+            
+        Returns:
+            Dictionary with deletion status
+        """
+        self.log(f"Attempting to delete: {title}")
+        
+        # First, find the movie to get its IMDb ID
+        results = self.vector_store.search(title, top_k=1)
+        
+        if not results or len(results) == 0:
+            self.log_error(f"✗ Movie not found: {title}")
+            return {
+                "success": False,
+                "message": f"'{title}' is not in your watchlist",
+                "agent": self.get_config().agent_id
+            }
+        
+        # Get the movie's ID (should be IMDb ID)
+        movie = results[0]
+        imdb_id = movie.get("id")
+        metadata = movie.get("metadata", {})
+        movie_title = metadata.get("title", title)
+        
+        # Delete from vector store
+        success = self.vector_store.delete_movie(imdb_id)
+        
+        if success:
+            self.log_success(f"✓ Deleted: {movie_title}")
+            return {
+                "success": True,
+                "message": f"Removed '{movie_title}' from your watchlist",
+                "movie": {
+                    "title": movie_title,
+                    "year": metadata.get("year", "N/A")
+                },
+                "agent": self.get_config().agent_id
+            }
+        else:
+            self.log_error(f"✗ Failed to delete: {movie_title}")
+            return {
+                "success": False,
+                "message": f"Failed to remove '{movie_title}'",
+                "agent": self.get_config().agent_id
+            }
     
     def _dict_to_movie_info(self, movie_dict: dict) -> MovieInfo:
         """Convert TMDB API dict to MovieInfo object."""

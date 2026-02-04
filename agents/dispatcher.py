@@ -77,10 +77,12 @@ Intents:
 - add_movie: User wants to add/save/store a movie (e.g., "add Inception", "put Matrix to watchlist", "I want to watch Pulp Fiction")
 - query_movie: User wants to find/search/get recommendations (e.g., "find dark sci-fi", "recommend action movies", "something emotional")
 - fetch_movie: User wants to lookup/fetch movie information without adding (e.g., "fetch Inception details", "get info about The Matrix")
+- check_movie: User wants to check if a movie is already in their watchlist (e.g., "Do I have Inception?", "Is The Matrix in my watchlist?")
+- delete_movie: User wants to remove a movie from their watchlist (e.g., "Remove Inception", "Delete The Matrix from my watchlist")
 
 Respond ONLY with a JSON object in this exact format:
 {{
-  "intent": "add_movie" or "query_movie" or "fetch_movie",
+  "intent": "add_movie" or "query_movie" or "fetch_movie" or "check_movie" or "delete_movie",
   "clean_query": "the movie title or search terms without action words",
   "confidence": 0.0 to 1.0
 }}
@@ -88,7 +90,9 @@ Respond ONLY with a JSON object in this exact format:
 Examples:
 - "Put Inception to watchlist" → {{"intent": "add_movie", "clean_query": "Inception", "confidence": 0.95}}
 - "Find dark sci-fi" → {{"intent": "query_movie", "clean_query": "dark sci-fi", "confidence": 0.9}}
-- "Fetch The Matrix" → {{"intent": "fetch_movie", "clean_query": "The Matrix", "confidence": 0.85}}"""
+- "Fetch The Matrix" → {{"intent": "fetch_movie", "clean_query": "The Matrix", "confidence": 0.85}}
+- "Do I have Inception in my watchlist?" → {{"intent": "check_movie", "clean_query": "Inception", "confidence": 0.95}}
+- "Remove The Matrix from watchlist" → {{"intent": "delete_movie", "clean_query": "The Matrix", "confidence": 0.90}}"""
 
         try:
             response = self.llm.invoke(prompt)
@@ -126,6 +130,8 @@ Examples:
         workflow.add_node("fetch_movie_data", self._fetch_movie_data)
         workflow.add_node("store_movie", self._store_movie)
         workflow.add_node("query_movies", self._query_movies)
+        workflow.add_node("check_movie", self._check_movie)
+        workflow.add_node("delete_movie", self._delete_movie)
         workflow.add_node("finalize", self._finalize)
         
         # Entry point
@@ -139,15 +145,30 @@ Examples:
                 "add_movie": "fetch_movie_data",
                 "query_movie": "query_movies",
                 "fetch_movie": "fetch_movie_data",
+                "check_movie": "check_movie",
+                "delete_movie": "delete_movie",
             }
         )
         
         # Add movie workflow: fetch → store → finalize
-        workflow.add_edge("fetch_movie_data", "store_movie")
+        workflow.add_conditional_edges(
+            "fetch_movie_data",
+            lambda state: "store" if state["intent"] == "add_movie" else "finalize",
+            {
+                "store": "store_movie",
+                "finalize": "finalize"
+            }
+        )
         workflow.add_edge("store_movie", "finalize")
         
         # Query workflow: query → finalize
         workflow.add_edge("query_movies", "finalize")
+        
+        # Check workflow: check → finalize
+        workflow.add_edge("check_movie", "finalize")
+        
+        # Delete workflow: delete → finalize
+        workflow.add_edge("delete_movie", "finalize")
         
         workflow.add_edge("finalize", END)
         
@@ -315,6 +336,38 @@ Examples:
         
         return state
     
+    def _check_movie(self, state: OrchestrationState) -> OrchestrationState:
+        """Call Librarian to check if movie exists."""
+        self.log_success("Checking movie in watchlist via Librarian...")
+        
+        # Get Librarian agent
+        librarian_class = AgentRegistry.get_agent("movie_librarian")
+        if not librarian_class:
+            state["result"] = {"error": "Librarian not available"}
+            return state
+        
+        librarian = librarian_class(verbose=self.verbose)
+        result = librarian.check_movie(state["clean_query"])
+        state["result"] = result
+        
+        return state
+    
+    def _delete_movie(self, state: OrchestrationState) -> OrchestrationState:
+        """Call Librarian to delete movie."""
+        self.log_success("Deleting movie from watchlist via Librarian...")
+        
+        # Get Librarian agent
+        librarian_class = AgentRegistry.get_agent("movie_librarian")
+        if not librarian_class:
+            state["result"] = {"error": "Librarian not available"}
+            return state
+        
+        librarian = librarian_class(verbose=self.verbose)
+        result = librarian.delete_movie(state["clean_query"])
+        state["result"] = result
+        
+        return state
+    
     def _finalize(self, state: OrchestrationState) -> OrchestrationState:
         """Finalize and prepare result."""
         if state["intent"] == "add_movie":
@@ -332,6 +385,11 @@ Examples:
                 "movie_data": state.get("movie_data"),
                 "workflow": "MovieCollector"
             }
+        elif state["intent"] in ["check_movie", "delete_movie"]:
+            # Result already set in _check_movie or _delete_movie
+            # Just ensure intent is included
+            if state.get("result"):
+                state["result"]["intent"] = state["intent"]
         # query_movie result already set in _query_movies
         
         return state
