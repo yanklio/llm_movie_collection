@@ -14,8 +14,8 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
 from agents.base_agent import BaseAgent, AgentConfig
-from tools.movie_api import MovieAPITool
-from tools.movie_info import MovieInfo
+from tools.movies.movie_api import MovieAPITool
+from tools.movies.movie_info import MovieInfo
 from storage.vector_store import VectorStore
 
 
