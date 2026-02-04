@@ -1,6 +1,7 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.base_agent import AgentConfig, BaseAgent
+from agents.critic.model import CriticRequest, CriticResponse, MovieResult
 from agents.critic.prompts import (
     CRITIC_SYSTEM_PROMPT,
     get_query_expansion_prompt,
@@ -24,8 +25,8 @@ class Critic(BaseAgent):
         return AgentConfig(
             agent_id="movie_critic",
             name="Movie Critic",
-            description="Intelligent movie recommendation agent. Provides personalized recommendations based on mood, genre, or themes.",
-            patterns=["recommend", "suggest", "want", "looking for"],
+            description="Movie recommendation and search agent. USE FOR: recommendations ('recommend', 'suggest'), searching existing watchlist ('find', 'want', 'looking for'), mood-based queries ('something dark', 'feeling emotional'), preference queries ('similar to X', 'I need'). Searches your personal watchlist and provides personalized suggestions.",
+            patterns=["recommend", "suggest", "want", "looking for", "find", "query"],
             capabilities=[
                 "Query expansion for vague requests",
                 "Semantic similarity search",
@@ -52,23 +53,35 @@ class Critic(BaseAgent):
         self.top_k = top_k
 
     def process(self, query: str) -> dict:
-        response = self.query(query)
-        return {"response": response, "agent": self.get_config().agent_id}
+        request = CriticRequest(query=query, top_k=self.top_k)
+        response = self.query_movies(request)
+        return response.dict()
 
-    def query(self, user_query: str) -> str:
-        self.log(f"Processing query: {user_query}")
+    def query_movies(self, request: CriticRequest) -> CriticResponse:
+        self.log(f"Processing query: {request.query}")
 
-        expanded_query = self._expand_query(user_query)
+        expanded_query = self._expand_query(request.query)
         self.log(f"Expanded query: {expanded_query}")
 
-        results = self.vector_store.search(expanded_query, top_k=self.top_k)
+        results = self.vector_store.search(expanded_query, top_k=request.top_k)
 
-        if not results:
+        movies = [MovieResult(**result) for result in results]
+
+        if not movies:
             self.log_error("No movies found in knowledge base")
-            return "I don't have any movies in my database yet. Please add some movies first!"
+            response_text = (
+                "I don't have any movies in my database yet. Please add some movies first!"
+            )
+        else:
+            self.log_success(f"Found {len(movies)} relevant movies")
+            response_text = self._synthesize(request.query, results)
 
-        self.log_success(f"Found {len(results)} relevant movies")
-        return self._synthesize(user_query, results)
+        return CriticResponse(
+            query=request.query,
+            expanded_query=expanded_query,
+            movies=movies,
+            response=response_text,
+        )
 
     def _expand_query(self, user_query: str) -> str:
         prompt = get_query_expansion_prompt(user_query)
