@@ -8,14 +8,14 @@ the dispatcher logic.
 from typing import Dict, Type
 
 from agents.base_agent import AgentConfig, BaseAgent
+from agents.critic import Critic
+from agents.librarian import Librarian
+from agents.movie_collector import MovieCollector
 
 
 class AgentRegistry:
     """
     Central registry for all agents in the system.
-
-    New agents can be registered here to be automatically discovered
-    by the dispatcher.
     """
 
     _agents: Dict[str, Type[BaseAgent]] = {}
@@ -40,3 +40,8 @@ class AgentRegistry:
     def get_configs(cls) -> Dict[str, AgentConfig]:
         """Get all agent configurations."""
         return {agent_id: agent_class.get_config() for agent_id, agent_class in cls._agents.items()}
+
+
+AgentRegistry.register(MovieCollector)
+AgentRegistry.register(Librarian)
+AgentRegistry.register(Critic)
