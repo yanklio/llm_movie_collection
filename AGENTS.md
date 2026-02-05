@@ -27,17 +27,19 @@ graph TD
 - LLM-based agent selection
 - Multi-step workflow orchestration
 - Visited agent tracking (prevents loops)
-- Automatic completion detection after storage
+- Automatic completion detection (early exit optimization)
+- **Entity Identification:** Distinguishes between "fetching new" (Scout), "checking stored" (Librarian), and "recommending" (Critic)
 
 ---
 
 ### 2. Scout (Data Fetching Agent)
-**Role:** Fetch movie data from TMDB API
+**Role:** Fetch NEW content from external APIs (TMDB)
 
 **Capabilities:**
-- LLM-powered query analysis
-- Smart search strategy selection (title/person/keyword)
-- Conversational result summaries
+- Deep search for movies/people
+- Smart search strategy selection
+- Returns structured data for Librarian
+- **Strict Scope:** Only searches for *new* content (never searches local DB)
 
 **Example Queries:**
 ```bash
@@ -48,67 +50,68 @@ python main.py "Fetch Christopher Nolan films"
 ---
 
 ### 3. Librarian (Storage Agent)
-**Role:** Manage storage in vector database
+**Role:** Manage storage in vector database (Entity-Agnostic)
 
 **Capabilities:**
-- Check if entities exist in storage
-- Search existing storage
-- Count and filter entities
-- Delete entities from storage
+- **Entity Agnostic:** Handles movies, books, or any text entity
+- Check existence (`check_entity`)
+- Count and filter (`count_entities`)
+- Delete entities (`delete_entity`)
 - Store items passed from Scout
 
 **Example Queries:**
 ```bash
 python main.py "Do I have Inception?"
-python main.py "How many movies do I have?"
+python main.py "How many entities do I have?"
 python main.py "Remove The Matrix"
 ```
 
 ---
 
 ### 4. MovieCritic (Recommendation Agent)
-**Role:** Movie search and personalized recommendations
+**Role:** RAG-based search and grounded recommendations
 
 **Capabilities:**
+- **Direct RAG Access:** Reads directly from Vector Store
+- **Grounded synthesis:** Only recommends what is in the collection
 - Query expansion (mood → keywords)
-- Vector similarity search
-- Grounded synthesis (LLM with context)
+- Full detail retrieval for existing items
 
 **Example Queries:**
 ```bash
-python main.py "Find dark sci-fi"
-python main.py "Recommend emotional movies"
+python main.py "Find dark sci-fi in my collection"
+python main.py "Give me full details about Inception"
 ```
 
 ---
 
 ## Workflows
 
-### Add Movie
+### Add Content
 ```
 User: "Add Inception"
   ↓
-Dispatcher → Scout (fetch from TMDB) → Librarian (store)
+Dispatcher → Scout (fetch) → Librarian (store)
   ↓
-Result: ✓ Stored 1 movie
+Result: ✓ Stored item
 ```
 
-### Check Movie
+### Check Content
 ```
 User: "Do I have The Matrix?"
   ↓
-Dispatcher → Librarian (search)
+Dispatcher → Librarian (check)
   ↓
 Result: Yes/No
 ```
 
-### Query/Recommend
+### Deep Search / Recommendation (RAG)
 ```
-User: "Find dark sci-fi"
+User: "Find dark sci-fi" OR "Tell me about Inception"
   ↓
-Dispatcher → MovieCritic (expand → search → synthesize)
+Dispatcher → MovieCritic (Direct RAG Search)
   ↓
-Result: Recommendations
+Result: Detailed response grounded in collection
 ```
 
 ---
@@ -124,7 +127,7 @@ python main.py -v "Add Inception"
 
 # Direct agent (bypass dispatcher)
 python main.py --agent scout "Fetch The Matrix"
-python main.py --agent librarian "Show all movies"
+python main.py --agent librarian "Show all entities"
 python main.py --agent movie_critic "Find thrillers"
 ```
 
@@ -134,9 +137,9 @@ python main.py --agent movie_critic "Find thrillers"
 
 ```bash
 # .env
-GOOGLE_API_KEY=your_key
-TMDB_API_KEY=your_key
-LLM_MODEL=gemini-2.0-flash
+GROQ_API_KEY=your_groq_key
+TMDB_API_KEY=your_tmdb_key
+LLM_MODEL=openai/gpt-oss-20b
 ```
 
 ---
