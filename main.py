@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from rich.console import Console
+from rich.pretty import Pretty
 from rich.table import Table
 
 from agents.dispatcher import Dispatcher
@@ -61,7 +62,6 @@ Examples:
         list_agents()
         return
 
-    # Validate query
     if not args.query:
         parser.print_help()
         sys.exit(1)
@@ -72,133 +72,77 @@ Examples:
     console.print(f"[dim]Query: {query}[/dim]\n")
 
     if args.agent:
-        agent_class = AgentRegistry.get_agent(args.agent)
-        if not agent_class:
-            console.print(f"[red]Error:[/red] Unknown agent '{args.agent}'")
-            console.print(
-                f"[yellow]Available agents:[/yellow] {', '.join(AgentRegistry.get_all_agents().keys())}"
-            )
-            sys.exit(1)
+        run_direct_agent(args.agent, query, args.model)
+        return
 
-        config = agent_class.get_config()
-        console.print(f"[yellow]Agent:[/yellow] {config.name} (direct)")
-        console.print("[dim]" + "=" * 60 + "[/dim]\n")
-
-        run_agent(agent_class, query, args.model)
-    else:
-        # Auto-orchestration via Dispatcher
-        console.print("[yellow]Mode:[/yellow] Orchestrated Workflow")
-        console.print("[dim]" + "=" * 60 + "[/dim]\n")
-
-        dispatcher = Dispatcher(model=args.model, verbose=args.verbose)
-        result = dispatcher.process(query)
-
-        console.print()
-
-        # Display results based on orchestration flow
-        intent = result.get("intent", "unknown")
-
-        if intent == "add_movie":
-            # MovieCollector → Librarian workflow
-            console.print(f"[cyan]Workflow:[/cyan] {result.get('workflow', 'unknown')}\n")
-            storage_result = result.get("storage_result", {})
-            display_librarian_results(storage_result)
-
-        elif intent == "fetch_movie":
-            # MovieCollector only
-            console.print(f"[cyan]Workflow:[/cyan] {result.get('workflow', 'unknown')}\n")
-            movie_data = result.get("movie_data", {})
-            console.print("[bold]Movie Data:[/bold]")
-            console.print(movie_data)
-            console.print()
-
-        elif intent == "query_movie":
-            # Critic workflow
-            console.print("[cyan]Workflow:[/cyan] Critic\n")
-            display_critic_results(result)
-
-        elif intent == "check_movie":
-            # Librarian check workflow
-            console.print("[cyan]Workflow:[/cyan] Librarian (Check)\n")
-            exists = result.get("exists", False)
-
-            if exists:
-                movie = result.get("movie", {})
-                console.print(
-                    f"[green]✓ Yes![/green] {movie.get('title', 'Unknown')} ({movie.get('year', 'N/A')}) is in your watchlist"
-                )
-                console.print(
-                    f"[dim]Genre: {movie.get('genre', 'N/A')} | Rating: {movie.get('rating', 'N/A')}[/dim]"
-                )
-            else:
-                message = result.get("message", "Movie not found")
-                console.print(f"[yellow]✗ No.[/yellow] {message}")
-
-        elif intent == "delete_movie":
-            # Librarian delete workflow
-            console.print("[cyan]Workflow:[/cyan] Librarian (Delete)\n")
-            success = result.get("success", False)
-            message = result.get("message", "Unknown")
-
-            if success:
-                movie = result.get("movie", {})
-                console.print(
-                    f"[green]✓ Deleted:[/green] {movie.get('title', 'Unknown')} ({movie.get('year', 'N/A')})"
-                )
-            else:
-                console.print(f"[red]✗ Failed:[/red] {message}")
-
-        else:
-            console.print(f"[red]Unknown intent:[/red] {intent}")
-            console.print(result)
+    run_orchestrated(query, args.model, args.verbose)
 
 
-def run_agent(agent_class, query: str, model: str | None = None):
-    """Execute an agent directly (no orchestration)."""
+def run_direct_agent(agent_id: str, query: str, model: str | None = None):
+    """Run a specific agent directly (bypass orchestration)."""
+    agent_class = AgentRegistry.get_agent(agent_id)
+    if not agent_class:
+        console.print(f"[red]Error:[/red] Unknown agent '{agent_id}'")
+        console.print(
+            f"[yellow]Available agents:[/yellow] {', '.join(AgentRegistry.get_all_agents().keys())}"
+        )
+        sys.exit(1)
+
     config = agent_class.get_config()
+    console.print(f"[yellow]Agent:[/yellow] {config.name} (direct)")
+    console.print("[dim]" + "=" * 60 + "[/dim]\n")
+
     agent = agent_class(model=model)
-
     result = agent.process(query)
+    display_result(result)
 
-    # Display results based on agent type
-    if config.agent_id == "movie_librarian":
-        display_librarian_results(result)
-    elif config.agent_id == "movie_critic":
-        display_critic_results(result)
-    elif config.agent_id == "movie_collector":
-        console.print("[bold]Collector Result:[/bold]")
-        console.print(result)
+
+def run_orchestrated(query: str, model: str | None = None, verbose: bool = False):
+    """Run query through the dispatcher for automatic orchestration."""
+    console.print("[yellow]Mode:[/yellow] Orchestrated Workflow")
+    console.print("[dim]" + "=" * 60 + "[/dim]\n")
+
+    dispatcher = Dispatcher(model=model, verbose=verbose)
+    result = dispatcher.process(query)
+
+    console.print()
+    display_result(result)
+
+
+def display_result(result: dict):
+    """Display any agent result in a clean format."""
+    response_text = result.get("response", "")
+    
+    if response_text:
+        console.print("[bold cyan]━━━ Result ━━━[/bold cyan]\n")
+        console.print(response_text)
         console.print()
+        
+        stored = result.get("stored_count", 0)
+        skipped = result.get("skipped_count", 0)
+        if stored > 0 or skipped > 0:
+            console.print(f"[dim]📦 Stored: {stored} | ⏭️ Skipped: {skipped}[/dim]")
+    
+    elif result.get("items"):
+        items = result.get("items", [])
+        console.print("[bold cyan]━━━ Found Movies ━━━[/bold cyan]\n")
+        for movie in items:
+            if hasattr(movie, 'title'):
+                console.print(f"  [bold]{movie.title}[/bold] ({movie.year})")
+                console.print(f"  [dim]{movie.genre} • {movie.director} • ⭐ {movie.imdb_rating}[/dim]\n")
+            else:
+                console.print(f"  [bold]{movie.get('Title')}[/bold] ({movie.get('Year')})")
+    
+    elif result.get("error"):
+        console.print(f"[red]Error:[/red] {result.get('error')}")
+    
+    elif result.get("message"):
+        console.print("[bold cyan]━━━ Result ━━━[/bold cyan]\n")
+        console.print(result.get("message"))
+    
     else:
-        console.print(result)
-
-
-def display_librarian_results(result: dict):
-    """Display Librarian agent results."""
-    successful = result.get("successful", [])
-    failed = result.get("failed", [])
-
-    console.print("[bold]Storage Summary:[/bold]")
-    console.print(f"  ✓ Added: {len(successful)} movies")
-    if failed:
-        console.print(f"  ✗ Failed: {len(failed)} movies")
-
-    if successful:
-        console.print("\n[green]Successfully added:[/green]")
-        for movie in successful:
-            console.print(f"  • {movie.title} ({movie.year})")
-
-    console.print()
-
-
-def display_critic_results(result: dict):
-    """Display Critic agent results."""
-    response = result.get("response", "")
-    if response:
-        console.print(response)
-    else:
-        console.print("[yellow]No recommendations found[/yellow]")
-    console.print()
+        console.print("[bold cyan]━━━ Result ━━━[/bold cyan]\n")
+        console.print(Pretty(result))
 
 
 def list_agents():
@@ -222,3 +166,4 @@ def list_agents():
 
 if __name__ == "__main__":
     main()
+
