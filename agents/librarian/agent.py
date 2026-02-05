@@ -1,51 +1,21 @@
-import json
-from typing import Any, Dict, List, Optional
+from typing import List
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
 from agents.base_agent import AgentConfig, BaseAgent
-from agents.librarian.prompts import (
-    get_movie_summary_prompt,
-    get_query_understanding_prompt,
-    get_storage_confirmation_prompt,
-)
+from agents.librarian.prompts import LIBRARIAN_SYSTEM_PROMPT
 from storage.vector_store import VectorStore
 from tools.movies.movie_info import MovieInfo
 
 
 class Librarian(BaseAgent):
     """
-    Storage Agent - LLM-enhanced movie data storage and management.
-
-    Uses LLMs to:
-    - Generate rich, searchable movie summaries
-    - Understand natural language queries about the watchlist
-    - Provide conversational confirmations and responses
+    Watchlist Agent - Uses LLM with tools to manage and query the movie watchlist.
+    
+    The agent can recursively call tools to answer complex questions about
+    the user's watchlist.
     """
-
-    @classmethod
-    def get_config(cls) -> AgentConfig:
-        """Return agent configuration."""
-        return AgentConfig(
-            agent_id="movie_librarian",
-            name="Movie Librarian",
-            description="LLM-enhanced storage specialist. Creates rich summaries and provides conversational watchlist management.",
-            patterns=["add:", "add ", "store:", "store ", "save:", "save "],
-            capabilities=[
-                "LLM-generated movie summaries",
-                "Natural language query understanding",
-                "Conversational confirmations",
-                "Smart watchlist management",
-                "Semantic movie storage",
-            ],
-            example_queries=[
-                "Add Inception to my watchlist",
-                "Do I have The Matrix?",
-                "Remove Pulp Fiction",
-                "Tell me about the movies I have",
-            ],
-        )
 
     def __init__(
         self,
@@ -53,376 +23,177 @@ class Librarian(BaseAgent):
         verbose: bool = False,
         vector_store: VectorStore | None = None,
     ):
-        """Initialize the Librarian."""
         super().__init__(model, verbose)
         self.vector_store = vector_store or VectorStore()
+        self._setup_tools()
 
-    def get_tools(self) -> List:
-        """Return list of available tools for this agent."""
-        return [
-            self.check_movie_in_watchlist,
-            self.delete_movie_from_watchlist,
-            self.search_watchlist_movies,
-            self.get_watchlist_statistics,
-            self.get_movie_details,
-        ]
-
-    @tool
-    def check_movie_in_watchlist(self, title: str) -> dict:
-        """Check if a movie is in the watchlist."""
-        self.log(f"Checking for: {title}")
-        results = self.vector_store.search(title, top_k=1)
-
-        if results and len(results) > 0:
-            movie = results[0]
-            metadata = movie.get("metadata", {})
-            self.log_success(
-                f"✓ Found: {metadata.get('title', 'Unknown')} ({metadata.get('year', 'N/A')})"
-            )
-
-            return {
-                "exists": True,
-                "movie": {
-                    "title": metadata.get("title", "Unknown"),
-                    "year": metadata.get("year", "N/A"),
-                    "genre": metadata.get("genre", "N/A"),
-                    "rating": metadata.get("rating", "N/A"),
-                },
-                "message": f"Yes! {metadata.get('title', 'Unknown')} ({metadata.get('year', 'N/A')}) is in your watchlist.",
-            }
-        else:
-            self.log(f"✗ Not found: {title}")
-            return {
-                "exists": False,
-                "message": f"'{title}' is not in your watchlist yet. Would you like to add it?",
-            }
-
-    @tool
-    def delete_movie_from_watchlist(self, title: str) -> dict:
-        """Delete a movie from the watchlist."""
-        self.log(f"Attempting to delete: {title}")
-        results = self.vector_store.search(title, top_k=1)
-
-        if not results or len(results) == 0:
-            self.log_error(f"✗ Movie not found: {title}")
-            return {
-                "success": False,
-                "message": f"'{title}' is not in your watchlist, so nothing to remove.",
-            }
-
-        movie = results[0]
-        imdb_id = movie.get("id")
-        metadata = movie.get("metadata", {})
-        movie_title = metadata.get("title", title)
-
-        success = self.vector_store.delete_movie(imdb_id)
-
-        if success:
-            self.log_success(f"✓ Deleted: {movie_title}")
-            return {
-                "success": True,
-                "message": f"Successfully removed '{movie_title}' from your watchlist.",
-                "movie": {"title": movie_title, "year": metadata.get("year", "N/A")},
-            }
-        else:
-            self.log_error(f"✗ Failed to delete: {movie_title}")
-            return {
-                "success": False,
-                "message": f"Failed to remove '{movie_title}'. Please try again.",
-            }
-
-    @tool
-    def search_watchlist_movies(self, query: str, limit: int = 5) -> dict:
-        """Search for movies in the watchlist by themes, mood, or description."""
-        self.log(f"Searching watchlist for: {query}")
-
-        try:
-            results = self.vector_store.search(query, top_k=limit)
-
+    def _setup_tools(self):
+        """Create tools and bind them to LLM."""
+        # Create tool functions that close over self.vector_store
+        vs = self.vector_store
+        
+        @tool
+        def search_watchlist(query: str) -> str:
+            """Search the watchlist for movies matching a query (title, genre, director, actor, theme)."""
+            results = vs.search(query, top_k=10)
             if not results:
-                return {
-                    "movies": [],
-                    "count": 0,
-                    "message": "No movies found matching your search.",
-                }
+                return "No movies found matching the search."
+            
+            movies = []
+            for r in results:
+                m = r.get("metadata", {})
+                similarity = 1 - r.get("distance", 1)
+                if similarity > 0.3:
+                    movies.append(f"- {m.get('title', 'Unknown')} ({m.get('year', 'N/A')}) - {m.get('genre', 'N/A')}, directed by {m.get('director', 'Unknown')}")
+            
+            if not movies:
+                return "No closely matching movies found."
+            return f"Found {len(movies)} movies:\n" + "\n".join(movies)
 
-            formatted_results = []
-            for result in results:
-                metadata = result.get("metadata", {})
-                formatted_results.append(
-                    {
-                        "title": metadata.get("title", "Unknown"),
-                        "year": metadata.get("year", "N/A"),
-                        "genre": metadata.get("genre", "N/A"),
-                        "rating": metadata.get("rating", "N/A"),
-                        "similarity": result.get("distance", 0),
-                    }
-                )
+        @tool
+        def get_all_movies() -> str:
+            """Get all movies in the watchlist."""
+            all_movies = vs.get_all_movies()
+            if not all_movies:
+                return "The watchlist is empty."
+            
+            movies = []
+            for r in all_movies:
+                m = r.get("metadata", {})
+                movies.append(f"- {m.get('title', 'Unknown')} ({m.get('year', 'N/A')}) - {m.get('genre', 'N/A')}")
+            
+            return f"Watchlist ({len(movies)} movies):\n" + "\n".join(movies)
 
-            return {
-                "movies": formatted_results,
-                "count": len(formatted_results),
-                "message": f"Found {len(formatted_results)} movies matching '{query}'",
-            }
+        @tool  
+        def count_movies() -> str:
+            """Get the total number of movies in the watchlist."""
+            count = vs.count()
+            return f"There are {count} movies in the watchlist."
 
-        except Exception as e:
-            self.log_error(f"Watchlist search failed: {e}")
-            return {"error": str(e)}
+        @tool
+        def delete_movie(title: str) -> str:
+            """Delete a movie from the watchlist by title."""
+            results = vs.search(title, top_k=1)
+            if not results:
+                return f"Movie '{title}' not found in watchlist."
+            
+            movie = results[0]
+            imdb_id = movie.get("id")
+            movie_title = movie.get("metadata", {}).get("title", title)
+            
+            if vs.delete_movie(imdb_id):
+                return f"Successfully deleted '{movie_title}' from watchlist."
+            return f"Failed to delete '{movie_title}'."
 
-    @tool
-    def get_watchlist_statistics(self) -> dict:
-        """Get statistics about the movie watchlist."""
-        try:
-            total_movies = (
-                self.vector_store.get_total_count()
-                if hasattr(self.vector_store, "get_total_count")
-                else 0
-            )
+        self.tools = [search_watchlist, get_all_movies, count_movies, delete_movie]
+        self.tool_map = {t.name: t for t in self.tools}
+        self.llm_with_tools = self.llm.bind_tools(self.tools)
 
-            return {
-                "total_movies": total_movies,
-                "message": f"Your watchlist contains {total_movies} movies.",
-            }
-        except Exception as e:
-            self.log_error(f"Stats retrieval failed: {e}")
-            return {"error": str(e)}
-
-    @tool
-    def get_movie_details(self, title: str) -> dict:
-        """Get detailed information about a specific movie in the watchlist."""
-        results = self.vector_store.search(title, top_k=1)
-
-        if not results:
-            return {
-                "found": False,
-                "message": f"'{title}' is not in your watchlist.",
-            }
-
-        movie = results[0]
-        metadata = movie.get("metadata", {})
-        document = movie.get("document", "")
-
-        return {
-            "found": True,
-            "movie": {
-                "title": metadata.get("title", "Unknown"),
-                "year": metadata.get("year", "N/A"),
-                "genre": metadata.get("genre", "N/A"),
-                "director": metadata.get("director", "Unknown"),
-                "actors": metadata.get("actors", "Unknown"),
-                "rating": metadata.get("rating", "N/A"),
-            },
-            "summary": document,
-        }
-
-    def process(self, query: str) -> dict:
-        """Process a natural language storage/management request."""
-        self.log(f"Understanding query with LLM: {query}")
-
-        try:
-            # Step 1: LLM-powered query understanding
-            intent = self._understand_query_with_llm(query)
-            if not intent:
-                return self._fallback_processing(query)
-
-            operation = intent.get("operation", "unknown")
-            movie_title = intent.get("movie_title")
-            confidence = intent.get("confidence", 0.5)
-
-            self.log(
-                f"LLM Intent: {operation} operation for '{movie_title}' (confidence: {confidence:.2f})"
-            )
-
-            # Step 2: Execute appropriate operation
-            if operation == "check":
-                return self.check_movie_in_watchlist(movie_title)
-            elif operation == "delete":
-                return self.delete_movie_from_watchlist(movie_title)
-            elif operation == "search":
-                return self.search_watchlist_movies(query)
-            elif operation == "info":
-                return self.get_movie_details(movie_title)
-            else:
-                return {
-                    "message": "I can help you add, check, delete, or search for movies in your watchlist.",
-                    "suggested_actions": [
-                        "Add a movie: 'Add Inception'",
-                        "Check for a movie: 'Do I have The Matrix?'",
-                        "Remove a movie: 'Delete Pulp Fiction'",
-                        "Search collection: 'Show me sci-fi movies'",
-                    ],
-                    "agent": self.get_config().agent_id,
-                }
-
-        except Exception as e:
-            self.log_error(f"Query processing failed: {e}")
-            return {"error": str(e), "agent": self.get_config().agent_id}
-
-    def store_movies(self, movies: List) -> dict:
-        """Store a list of movies with LLM-generated summaries."""
-        successful = []
-        failed = []
-
-        for movie in movies:
-            try:
-                movie_info = self._convert_to_movie_info(movie)
-                summary = self._generate_rich_summary(movie_info)
-                self._store_in_db(movie_info, summary)
-
-                successful.append(movie_info)
-                self.log(f"✓ Stored: {movie_info.title} ({movie_info.year})")
-
-            except Exception as e:
-                movie_title = self._get_movie_title(movie)
-                self.log_error(f"✗ Failed to store {movie_title}: {e}")
-                failed.append(movie_title)
-
-        confirmation = self._generate_storage_confirmation(successful, failed)
-
-        return {
-            "successful": successful,
-            "failed": failed,
-            "confirmation": confirmation,
-            "agent": self.get_config().agent_id,
-        }
-
-    def _understand_query_with_llm(self, query: str) -> Optional[Dict[str, Any]]:
-        """Use LLM to understand user intent."""
-        if not self.llm:
-            self.log("No LLM available, using fallback processing")
-            return None
-
-        try:
-            prompt = get_query_understanding_prompt(query)
-            response = self.llm.invoke([HumanMessage(content=prompt)])
-
-            content = response.content.strip()
-            if content.startswith("```json"):
-                content = content.replace("```json", "").replace("```", "").strip()
-
-            intent = json.loads(content)
-            return intent
-
-        except Exception as e:
-            self.log_error(f"LLM query understanding failed: {e}")
-            return None
-
-    def _generate_rich_summary(self, movie_info: MovieInfo) -> str:
-        """Generate LLM-enhanced movie summary for better searchability."""
-        if not self.llm:
-            return self._create_basic_summary(movie_info)
-
-        try:
-            movie_data = {
-                "title": movie_info.title,
-                "year": movie_info.year,
-                "genre": movie_info.genre,
-                "director": movie_info.director,
-                "actors": movie_info.actors,
-                "plot": movie_info.plot,
-                "runtime": movie_info.runtime,
-                "rating": movie_info.imdb_rating,
-            }
-
-            prompt = get_movie_summary_prompt(movie_data)
-            response = self.llm.invoke([HumanMessage(content=prompt)])
-
-            enhanced_summary = response.content.strip()
-            self.log(f"Generated enhanced summary for {movie_info.title}")
-            return enhanced_summary
-
-        except Exception as e:
-            self.log_error(f"Enhanced summary generation failed for {movie_info.title}: {e}")
-            return self._create_basic_summary(movie_info)
-
-    def _generate_storage_confirmation(self, successful: List, failed: List) -> Optional[str]:
-        """Generate conversational confirmation message."""
-        if not self.llm:
-            return None
-
-        try:
-            prompt = get_storage_confirmation_prompt(successful, failed)
-            response = self.llm.invoke([HumanMessage(content=prompt)])
-            return response.content.strip()
-
-        except Exception as e:
-            self.log_error(f"Confirmation generation failed: {e}")
-            return None
-
-    def _fallback_processing(self, query: str) -> dict:
-        """Fallback processing when LLM is unavailable."""
-        query_lower = query.lower()
-
-        if any(pattern in query_lower for pattern in ["do i have", "is ", " in ", "check"]):
-            title = query
-            for pattern in ["do i have ", "is ", " in my watchlist", "check for "]:
-                title = title.replace(pattern, "").strip()
-            title = title.rstrip("?").strip()
-            return self.check_movie_in_watchlist(title)
-
-        elif any(pattern in query_lower for pattern in ["remove", "delete", "drop"]):
-            title = query
-            for pattern in ["remove ", "delete ", "drop "]:
-                title = title.replace(pattern, "").strip()
-            return self.delete_movie_from_watchlist(title)
-
-        else:
-            return {
-                "message": "I can help you manage your movie watchlist. Try: 'Do I have Inception?' or 'Remove The Matrix'",
-                "agent": self.get_config().agent_id,
-            }
-
-    def _convert_to_movie_info(self, movie) -> MovieInfo:
-        """Convert movie data to MovieInfo object."""
-        if isinstance(movie, MovieInfo):
-            return movie
-        return self._dict_to_movie_info(movie)
-
-    def _dict_to_movie_info(self, movie_dict: dict) -> MovieInfo:
-        """Convert TMDB API dict to MovieInfo object."""
-        return MovieInfo(
-            imdb_id=movie_dict.get("imdbID", ""),
-            title=movie_dict.get("Title", ""),
-            year=movie_dict.get("Year", ""),
-            genre=movie_dict.get("Genre", ""),
-            director=movie_dict.get("Director", ""),
-            actors=movie_dict.get("Actors", ""),
-            plot=movie_dict.get("Plot", ""),
-            runtime=movie_dict.get("Runtime", ""),
-            imdb_rating=movie_dict.get("imdbRating", "N/A"),
-            poster_url=movie_dict.get("Poster", ""),
+    @classmethod
+    def get_config(cls) -> AgentConfig:
+        return AgentConfig(
+            agent_id="movie_librarian",
+            name="Movie Librarian",
+            description="Watchlist management agent. Handles questions about your watchlist: checking movies, searching, counting, filtering, and deleting.",
+            patterns=["check", "do i have", "watchlist", "delete", "remove"],
+            capabilities=[
+                "Check if movies exist in watchlist",
+                "Search movies by any criteria",
+                "Count and filter movies",
+                "Delete movies from watchlist",
+                "Answer complex watchlist questions",
+            ],
+            example_queries=[
+                "Do I have Inception?",
+                "How many Tom Hanks movies do I have?",
+                "Remove The Matrix",
+                "Show me my sci-fi movies",
+            ],
         )
 
-    def _create_basic_summary(self, movie: MovieInfo) -> str:
-        """Create a basic summary when LLM is unavailable."""
-        return f"""Title: {movie.title} ({movie.year})
-Genre: {movie.genre}
-Director: {movie.director}
-Cast: {movie.actors}
-Rating: {movie.imdb_rating}/10
+    def process(self, query: str) -> dict:
+        """Process user query using tool-calling agent loop."""
+        self.log(f"Processing: {query}")
+        
+        messages = [
+            SystemMessage(content=LIBRARIAN_SYSTEM_PROMPT),
+            HumanMessage(content=query),
+        ]
+        
+        # Agent loop - let LLM call tools until it has an answer
+        max_iterations = 5
+        for i in range(max_iterations):
+            response = self.llm_with_tools.invoke(messages)
+            messages.append(response)
+            
+            # Check if LLM wants to call tools
+            if not response.tool_calls:
+                self.log_success(f"Completed in {i+1} iteration(s)")
+                return {
+                    "query": query,
+                    "response": response.content,
+                    "operation_performed": "query",
+                    "success": True,
+                    "agent_id": self.get_config().agent_id,
+                }
+            
+            # Execute tool calls
+            for tool_call in response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = tool_call["args"]
+                self.log(f"Tool: {tool_name}({tool_args})")
+                
+                # Execute the tool
+                tool_fn = self.tool_map.get(tool_name)
+                if tool_fn:
+                    result = tool_fn.invoke(tool_args)
+                else:
+                    result = f"Unknown tool: {tool_name}"
+                
+                messages.append(ToolMessage(content=result, tool_call_id=tool_call["id"]))
+        
+        return {
+            "query": query,
+            "response": "I couldn't complete the request. Please try again.",
+            "operation_performed": "error",
+            "success": False,
+            "agent_id": self.get_config().agent_id,
+        }
 
-Plot: {movie.plot}
-
-Runtime: {movie.runtime}"""
-
-    def _store_in_db(self, movie: MovieInfo, summary: str):
-        """Store movie in vector database."""
-        self.vector_store.add_movie(
-            imdb_id=movie.imdb_id,
-            document=summary,
-            metadata={
+    def store_movies(self, movies: List[MovieInfo]) -> dict:
+        """Store movies to watchlist - called by other agents."""
+        self.log(f"Storing {len(movies)} movies")
+        
+        stored = []
+        skipped = []
+        
+        for movie in movies:
+            summary = f"Title: {movie.title} ({movie.year})\nGenre: {movie.genre}\nDirector: {movie.director}\nCast: {movie.actors}\nRating: {movie.imdb_rating}/10\nPlot: {movie.plot}"
+            
+            metadata = {
                 "title": movie.title,
                 "year": movie.year,
                 "genre": movie.genre,
                 "director": movie.director,
                 "actors": movie.actors,
                 "rating": movie.imdb_rating,
-            },
-        )
-
-    def _get_movie_title(self, movie) -> str:
-        """Get movie title for error reporting."""
-        if isinstance(movie, MovieInfo):
-            return f"{movie.title} ({movie.year})"
-        else:
-            return movie.get("Title", "Unknown") if hasattr(movie, "get") else "Unknown"
+                "runtime": movie.runtime,
+                "plot": movie.plot,
+                "imdb_id": movie.imdb_id,
+            }
+            
+            if self.vector_store.add_movie(movie.imdb_id, summary, metadata):
+                stored.append(movie)
+                self.log_success(f"Added: {movie.title}")
+            else:
+                skipped.append(movie)
+                self.log(f"Skipped (exists): {movie.title}")
+        
+        return {
+            "success": True,
+            "stored_count": len(stored),
+            "skipped_count": len(skipped),
+            "successful": stored,
+            "failed": skipped,
+            "message": f"Stored {len(stored)} movies, skipped {len(skipped)} duplicates",
+        }
