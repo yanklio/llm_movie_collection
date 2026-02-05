@@ -1,8 +1,8 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.base_agent import AgentConfig, BaseAgent
-from agents.critic.model import CriticRequest, CriticResponse, MovieResult
-from agents.critic.prompts import (
+from agents.movie_critic.model import CriticRequest, CriticResponse, MovieResult
+from agents.movie_critic.prompts import (
     CRITIC_SYSTEM_PROMPT,
     get_query_expansion_prompt,
     get_synthesis_prompt,
@@ -10,7 +10,7 @@ from agents.critic.prompts import (
 from storage.vector_store import VectorStore
 
 
-class Critic(BaseAgent):
+class MovieCritic(BaseAgent):
     """
     Retrieval Agent - Expands queries and synthesizes grounded recommendations.
 

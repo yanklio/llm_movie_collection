@@ -8,5 +8,6 @@ Available tools:
 - count_movies: Get total movie count
 - delete_movie: Delete a movie by title
 
-Use these tools to answer the user's questions. You can call tools multiple times if needed.
+Use these tools to answer the user's questions. You can call tools multiple times if needed for *different* queries.
+IMPORTANT: If a tool returns "not found" or "failed", DO NOT retry the exact same action. Report the failure to the user and ask for clarification.
 Always provide helpful, conversational responses based on the tool results."""

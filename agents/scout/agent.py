@@ -5,14 +5,14 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from agents.base_agent import AgentConfig, BaseAgent
-from agents.movie_collector.prompts import (
+from agents.scout.prompts import (
     get_query_analysis_prompt,
     get_result_summary_prompt,
 )
 from tools.movies.movie_api import MovieAPITool
 
 
-class MovieCollector(BaseAgent):
+class Scout(BaseAgent):
     """
     Data Collection Agent - Fetches movie data from TMDB API using LLM-enhanced query analysis.
 
@@ -24,10 +24,10 @@ class MovieCollector(BaseAgent):
     def get_config(cls) -> AgentConfig:
         """Return agent configuration."""
         return AgentConfig(
-            agent_id="movie_collector",
-            name="Movie Collector",
-            description="LLM-enhanced data fetching specialist. Analyzes queries intelligently and searches TMDB API.",
-            patterns=["fetch:", "fetch ", "lookup:", "lookup ", "get:", "get "],
+            agent_id="scout",
+            name="Scout",
+            description="FIRST STEP for adding data to storage(movies). USE FOR: 'Add <movie>' commands (must fetch before storing), fetching movie data from TMDB, looking up movies not in watchlist. After fetching, movies must be stored via librarian.",
+            patterns=["fetch", "lookup", "get", "add"],
             capabilities=[
                 "LLM-powered query analysis",
                 "Smart search strategy selection",
@@ -75,7 +75,7 @@ class MovieCollector(BaseAgent):
         self.log(f"Direct person search: {person}")
         results = self.movie_api.search_by_person(person)
         limited_results = results[:limit] if results else []
-        return {"movies": limited_results, "search_type": "person", "count": len(limited_results)}
+        return {"items": limited_results, "search_type": "person", "count": len(limited_results)}
 
     @tool
     def search_movies_by_keyword(self, keyword: str, limit: int = 10) -> Dict:
@@ -83,7 +83,7 @@ class MovieCollector(BaseAgent):
         self.log(f"Direct keyword search: {keyword}")
         results = self.movie_api.search_by_keyword(keyword)
         limited_results = results[:limit] if results else []
-        return {"movies": limited_results, "search_type": "keyword", "count": len(limited_results)}
+        return {"items": limited_results, "search_type": "keyword", "count": len(limited_results)}
 
     @tool
     def analyze_movie_query(self, query: str) -> Dict:
@@ -96,7 +96,6 @@ class MovieCollector(BaseAgent):
         self.log(f"Analyzing query with LLM: {query}")
 
         try:
-            # Step 1: LLM-powered query analysis
             analysis = self._analyze_query_with_llm(query)
             if not analysis:
                 return self._fallback_search(query)
@@ -109,14 +108,11 @@ class MovieCollector(BaseAgent):
                 f"LLM Analysis: {search_type} search for '{search_terms}' (confidence: {confidence:.2f})"
             )
 
-            # Step 2: Execute search based on LLM analysis
             movies = self._execute_search(search_type, search_terms)
-
-            # Step 3: Generate conversational summary
             summary = self._generate_summary(query, search_type, movies) if movies else None
 
             result = {
-                "movies": movies,
+                "items": movies,
                 "count": len(movies),
                 "query": query,
                 "search_method": search_type,
@@ -124,10 +120,11 @@ class MovieCollector(BaseAgent):
                 "confidence": confidence,
                 "summary": summary,
                 "agent": self.get_config().agent_id,
+                "success": len(movies) > 0,
             }
 
             if movies:
-                self.log_success(f"✓ Found {len(movies)} movie(s) via {search_type} search")
+                self.log_success(f"Found {len(movies)} movie(s) via {search_type} search")
             else:
                 self.log("No movies found")
 
@@ -136,7 +133,7 @@ class MovieCollector(BaseAgent):
         except Exception as e:
             self.log_error(f"Search failed: {e}")
             return {
-                "movies": [],
+                "items": [],
                 "count": 0,
                 "query": query,
                 "error": str(e),
@@ -153,7 +150,19 @@ class MovieCollector(BaseAgent):
             prompt = get_query_analysis_prompt(query)
             response = self.llm.invoke([HumanMessage(content=prompt)])
 
-            content = response.content.strip()
+            content = response.content
+            if isinstance(content, list):
+                texts = []
+                for part in content:
+                    if isinstance(part, dict) and "text" in part:
+                        texts.append(part["text"])
+                    else:
+                        texts.append(str(part))
+                content = " ".join(texts)
+            if not isinstance(content, str):
+                content = str(content)
+
+            content = content.strip()
             if content.startswith("```json"):
                 content = content.replace("```json", "").replace("```", "").strip()
 
@@ -180,7 +189,7 @@ class MovieCollector(BaseAgent):
             if result:
                 movies = [result]
 
-        else:  # keyword search
+        else:
             self.log(f"Keyword search: {search_terms}")
             results = self.movie_api.search_by_keyword(search_terms)
             if results:
@@ -206,7 +215,16 @@ class MovieCollector(BaseAgent):
             )
 
             response = self.llm.invoke([HumanMessage(content=prompt)])
-            return response.content.strip()
+            content = response.content
+            if isinstance(content, list):
+                texts = []
+                for part in content:
+                    if isinstance(part, dict) and "text" in part:
+                        texts.append(part["text"])
+                    else:
+                        texts.append(str(part))
+                content = " ".join(texts)
+            return content.strip() if isinstance(content, str) else str(content)
 
         except Exception as e:
             self.log_error(f"Summary generation failed: {e}")
@@ -217,11 +235,26 @@ class MovieCollector(BaseAgent):
         formatted_movies = []
 
         for movie in movies[:5]:
-            title = movie.get("Title", "Unknown")
-            year = movie.get("Year", "N/A")
-            genre = movie.get("Genre", "N/A")
-            director = movie.get("Director", "Unknown")
-            rating = movie.get("imdbRating", "N/A")
+            # Handle both Pydantic/Dataclass objects and dictionaries
+            if hasattr(movie, "title"):  # Check for lowercase (MovieInfo style)
+                title = getattr(movie, "title", "Unknown")
+                year = getattr(movie, "year", "N/A")
+                genre = getattr(movie, "genre", "N/A")
+                director = getattr(movie, "director", "Unknown")
+                rating = getattr(movie, "imdb_rating", "N/A")
+            elif hasattr(movie, "Title"):
+                title = getattr(movie, "Title", "Unknown")
+                year = getattr(movie, "Year", "N/A")
+                genre = getattr(movie, "Genre", "N/A")
+                director = getattr(movie, "Director", "Unknown")
+                rating = getattr(movie, "imdbRating", "N/A")
+            else:
+                # Dictionary fallback
+                title = movie.get("Title", movie.get("title", "Unknown"))
+                year = movie.get("Year", movie.get("year", "N/A"))
+                genre = movie.get("Genre", movie.get("genre", "N/A"))
+                director = movie.get("Director", movie.get("director", "Unknown"))
+                rating = movie.get("imdbRating", movie.get("imdb_rating", "N/A"))
 
             formatted_movies.append(
                 f"• {title} ({year}) - {genre}\n  Director: {director}, Rating: {rating}/10"
@@ -237,7 +270,6 @@ class MovieCollector(BaseAgent):
         movies = []
         search_method = "heuristic"
 
-        # Check for person keywords
         person_keywords = ["movies", "films", "actor", "director", "starring"]
         if any(kw in query_lower for kw in person_keywords):
             person_name = query
@@ -264,7 +296,7 @@ class MovieCollector(BaseAgent):
                 search_method = "keyword"
 
         return {
-            "movies": movies,
+            "items": movies,
             "count": len(movies),
             "query": query,
             "search_method": search_method,
