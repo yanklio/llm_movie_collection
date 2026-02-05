@@ -1,7 +1,8 @@
 """
-VectorStore - Abstraction over ChromaDB for movie document storage.
+VectorStore - Abstraction over ChromaDB for entity document storage.
 
-Handles document storage and similarity search for the movie RAG system.
+Handles document storage and similarity search for the RAG system.
+Entities can be movies, books, or other media items.
 """
 
 import os
@@ -16,20 +17,15 @@ load_dotenv()
 
 class VectorStore:
     """
-    Vector database wrapper for movie document storage and retrieval.
+    Vector database wrapper for entity document storage and retrieval.
     
     Uses ChromaDB with its default embedding function.
     """
     
-    COLLECTION_NAME = "movies"
+    COLLECTION_NAME = "entities"
     
     def __init__(self, persist_dir: Optional[str] = None):
-        """
-        Initialize the VectorStore.
-        
-        Args:
-            persist_dir: Directory for ChromaDB persistence.
-        """
+        """Initialize the VectorStore."""
         self.persist_dir = persist_dir or os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
         
         self.client = chromadb.PersistentClient(
@@ -39,22 +35,22 @@ class VectorStore:
         
         self.collection = self.client.get_or_create_collection(
             name=self.COLLECTION_NAME,
-            metadata={"description": "Movie documents for RAG retrieval"}
+            metadata={"description": "Entity documents for RAG retrieval"}
         )
     
-    def add_movie(self, imdb_id: str, document: str, metadata: dict) -> bool:
+    def add(self, entity_id: str, document: str, metadata: dict) -> bool:
         """
-        Add a movie document to the vector store.
+        Add an entity document to the vector store.
         
         Returns:
             True if added, False if already exists.
         """
-        existing = self.collection.get(ids=[imdb_id])
+        existing = self.collection.get(ids=[entity_id])
         if existing["ids"]:
             return False
         
         self.collection.add(
-            ids=[imdb_id],
+            ids=[entity_id],
             documents=[document],
             metadatas=[metadata]
         )
@@ -62,7 +58,7 @@ class VectorStore:
     
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         """
-        Search for similar movies based on query.
+        Search for similar entities based on query.
         
         Returns:
             List of dicts with 'id', 'document', 'metadata', 'distance'.
@@ -85,10 +81,10 @@ class VectorStore:
         
         return items
     
-    def get_movie(self, imdb_id: str) -> Optional[dict]:
-        """Get a specific movie by ID."""
+    def get(self, entity_id: str) -> Optional[dict]:
+        """Get a specific entity by ID."""
         result = self.collection.get(
-            ids=[imdb_id],
+            ids=[entity_id],
             include=["documents", "metadatas"]
         )
         
@@ -101,17 +97,17 @@ class VectorStore:
             "metadata": result["metadatas"][0] if result["metadatas"] else {},
         }
     
-    def delete_movie(self, imdb_id: str) -> bool:
-        """Delete a movie from the vector store."""
-        existing = self.collection.get(ids=[imdb_id])
+    def delete(self, entity_id: str) -> bool:
+        """Delete an entity from the vector store."""
+        existing = self.collection.get(ids=[entity_id])
         if not existing["ids"]:
             return False
         
-        self.collection.delete(ids=[imdb_id])
+        self.collection.delete(ids=[entity_id])
         return True
     
-    def get_all_movies(self) -> list[dict]:
-        """Get all movies in the collection."""
+    def get_all(self) -> list[dict]:
+        """Get all entities in the collection."""
         result = self.collection.get(include=["documents", "metadatas"])
         
         items = []
@@ -125,7 +121,7 @@ class VectorStore:
         return items
     
     def count(self) -> int:
-        """Return total number of movies."""
+        """Return total number of entities."""
         return self.collection.count()
     
     def clear(self) -> None:
@@ -133,5 +129,5 @@ class VectorStore:
         self.client.delete_collection(self.COLLECTION_NAME)
         self.collection = self.client.create_collection(
             name=self.COLLECTION_NAME,
-            metadata={"description": "Movie documents for RAG retrieval"}
+            metadata={"description": "Entity documents for RAG retrieval"}
         )
