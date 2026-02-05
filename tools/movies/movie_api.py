@@ -53,7 +53,6 @@ class MovieAPITool:
         if year:
             params["year"] = year
 
-        # Search for movies matching the title
         response = requests.get(f"{self.BASE_URL}/search/movie", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -62,10 +61,8 @@ class MovieAPITool:
         if not results:
             raise ValueError(f"No movie found with title: {title}")
 
-        # Get the first (most relevant) result
         movie_id = results[0]["id"]
 
-        # Fetch full movie details
         return self._get_movie_details(movie_id)
 
     def search_by_imdb_id(self, imdb_id: str) -> MovieInfo:
@@ -93,16 +90,13 @@ class MovieAPITool:
 
     def search(self, query: str) -> MovieInfo:
         """Smart search that handles titles, IMDb IDs, and URLs."""
-        # Check if it's an IMDb URL
         imdb_id = self.parse_imdb_url(query)
         if imdb_id:
             return self.search_by_imdb_id(imdb_id)
 
-        # Check if it's an IMDb ID directly
         if query.startswith("tt") and query[2:].isdigit():
             return self.search_by_imdb_id(query)
 
-        # Otherwise, treat as title
         return self.search_by_title(query)
 
     def search_movies(self, search_term: str, year: Optional[str] = None) -> list[dict]:
@@ -131,10 +125,8 @@ class MovieAPITool:
         if not results:
             raise ValueError(f"No movies found matching: {search_term}")
 
-        # Convert TMDB format to our format with IMDb IDs
         movies = []
         for result in results[:10]:  # Limit to 10
-            # Get IMDb ID for each movie
             try:
                 movie_details = self._get_movie_details(result["id"])
                 movies.append(
@@ -148,7 +140,6 @@ class MovieAPITool:
                     }
                 )
             except:
-                # Skip if we can't get IMDb ID
                 continue
 
         return movies
@@ -163,7 +154,6 @@ class MovieAPITool:
         Returns:
             List of movies the person acted in or directed
         """
-        # Step 1: Search for the person
         params = {
             "api_key": self.api_key,
             "query": person_name,
@@ -177,10 +167,8 @@ class MovieAPITool:
         if not results:
             raise ValueError(f"No person found with name: {person_name}")
 
-        # Get the first (most relevant) person
         person_id = results[0]["id"]
 
-        # Step 2: Get their movie credits
         response = requests.get(
             f"{self.BASE_URL}/person/{person_id}/movie_credits",
             params={"api_key": self.api_key},
@@ -189,15 +177,12 @@ class MovieAPITool:
         response.raise_for_status()
         credits_data = response.json()
 
-        # Combine cast and crew movies
         cast_movies = credits_data.get("cast", [])
         crew_movies = credits_data.get("crew", [])
 
-        # Convert to our format - prioritize director credits
         movies = []
         seen_ids = set()
 
-        # First add movies as director
         for movie in crew_movies:
             if movie.get("job") == "Director":
                 movie_id = movie.get("id")
@@ -219,8 +204,7 @@ class MovieAPITool:
                     except:
                         continue
 
-        # Then add cast movies (if not already added as director)
-        for movie in cast_movies[:20]:  # Limit to 20 most popular
+        for movie in cast_movies[:20]:
             movie_id = movie.get("id")
             if movie_id and movie_id not in seen_ids:
                 seen_ids.add(movie_id)
@@ -261,34 +245,28 @@ class MovieAPITool:
         external_ids = data.get("external_ids", {})
         imdb_id = external_ids.get("imdb_id", "")
 
-        # Extract credits
         credits = data.get("credits", {})
 
-        # Get director
         crew = credits.get("crew", [])
         directors = [person["name"] for person in crew if person.get("job") == "Director"]
         director = ", ".join(directors[:3]) if directors else "N/A"
 
-        # Get cast
         cast = credits.get("cast", [])
         actors = [person["name"] for person in cast[:5]]  # Top 5 actors
         actors_str = ", ".join(actors) if actors else "N/A"
 
-        # Get genres
         genres = data.get("genres", [])
         genre_str = ", ".join([g["name"] for g in genres]) if genres else "N/A"
 
-        # Get year from release date
         release_date = data.get("release_date", "")
         year = release_date[:4] if release_date else "N/A"
 
-        # Get rating (TMDB uses 0-10 scale like IMDb)
         rating = data.get("vote_average", "N/A")
         if rating != "N/A":
             rating = f"{float(rating):.1f}"
 
         return MovieInfo(
-            imdb_id=imdb_id or f"tmdb_{data.get('id', '')}",  # Fallback to TMDB ID if no IMDb ID
+            imdb_id=imdb_id or f"tmdb_{data.get('id', '')}",
             title=data.get("title", ""),
             year=year,
             genre=genre_str,
@@ -339,9 +317,7 @@ class MovieAPITool:
                         else "",
                         "imdbID": movie_details.imdb_id,
                         "Type": "movie",
-                        "Genre": ", ".join([g["name"] for g in result.get("genre_ids", [])])
-                        if result.get("genre_ids")
-                        else "N/A",
+                        "Genre": movie_details.genre,
                         "Rating": f"{result.get('vote_average', 0):.1f}"
                         if result.get("vote_average")
                         else "N/A",

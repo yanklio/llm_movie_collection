@@ -48,10 +48,13 @@ class Dispatcher(BaseAgent):
         for i in range(self.MAX_ITERATIONS):
             if i == 0:
                 prompt = routing_prompt(query, agents_text)
+                self.log_model("Deciding which agent to call")
             else:
                 prompt = next_step_prompt(query, last_result, agents_text, list(visited_agents))
+                self.log_model("Deciding next step")
 
-            response = self.llm.invoke(prompt)
+            with self.thinking("Routing"):
+                response = self.llm.invoke(prompt)
             decision = self._parse_json(response.content)
 
             if decision.get("complete"):
@@ -64,15 +67,15 @@ class Dispatcher(BaseAgent):
             agent_id = decision.get("next_agent")
             if not agent_id:
                 break
-            
-            # Prevent calling the same agent twice in a workflow
+
             if agent_id in visited_agents:
                 self.log(f"Agent {agent_id} already visited, completing workflow")
                 return {
-                    "response": last_result.get("response") or last_result.get("message", "Operation completed"),
+                    "response": last_result.get("response")
+                    or last_result.get("message", "Operation completed"),
                     "success": True,
                 }
-            
+
             visited_agents.add(agent_id)
             self.log(f"→ {agent_id}")
 
@@ -82,13 +85,14 @@ class Dispatcher(BaseAgent):
 
             agent = agent_class(verbose=self.verbose)
 
-            # If we have data from previous agent, try storing first
             if context.get("data") and hasattr(agent, "store_items"):
                 last_result = agent.store_items(context["data"])
-                context["data"] = None  # Clear after storing
-                
-                # Storage complete = workflow complete
-                if last_result.get("stored_count", 0) > 0 or last_result.get("skipped_count", 0) > 0:
+                context["data"] = None
+
+                if (
+                    last_result.get("stored_count", 0) > 0
+                    or last_result.get("skipped_count", 0) > 0
+                ):
                     self.log_success(f"Storage complete in {i + 1} step(s)")
                     return {
                         "response": last_result.get("message", "Movies added to watchlist"),
@@ -97,7 +101,16 @@ class Dispatcher(BaseAgent):
                     }
             else:
                 last_result = agent.process(decision.get("query", query))
-                # Capture any data for next agent
+                
+                # Special case: If movie_critic returns a response, we are done
+                if agent_id == "movie_critic" and (last_result.get("response") or last_result.get("movies")):
+                    self.log_success(f"Movie Critic completed in {i + 1} step(s)")
+                    return {
+                        "response": last_result.get("response", ""),
+                        "success": True,
+                        **last_result
+                    }
+
                 for key in ["items", "data", "results"]:
                     if key in last_result and last_result[key]:
                         context["data"] = last_result[key]
@@ -115,19 +128,17 @@ class Dispatcher(BaseAgent):
 
     def _parse_json(self, content) -> dict:
         """Parse JSON from LLM response."""
-        # Handle list content (multi-part responses from Gemini)
         if isinstance(content, list):
-            # Extract text from list of dicts with 'text' field
             texts = []
             for part in content:
-                if isinstance(part, dict) and 'text' in part:
-                    texts.append(part['text'])
+                if isinstance(part, dict) and "text" in part:
+                    texts.append(part["text"])
                 else:
                     texts.append(str(part))
             content = " ".join(texts)
         if not isinstance(content, str):
             content = str(content)
-        
+
         content = content.strip()
         if content.startswith("```"):
             content = re.sub(r"```\w*\n?", "", content).strip()

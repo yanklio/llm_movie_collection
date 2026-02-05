@@ -1,3 +1,4 @@
+import uuid
 from typing import Any, List
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -10,10 +11,7 @@ from storage.vector_store import VectorStore
 
 class Librarian(BaseAgent):
     """
-    Watchlist Agent - Uses LLM with tools to manage and query the movie watchlist.
-
-    The agent can recursively call tools to answer complex questions about
-    the user's watchlist.
+    Librarian Agent - Uses LLM with tools to manage and query the user's entity collection.
     """
 
     def __init__(
@@ -26,108 +24,179 @@ class Librarian(BaseAgent):
         self.vector_store = vector_store or VectorStore()
         self._setup_tools()
 
+
+    def _find_entity(self, title: str) -> dict | None:
+        """
+        Find best matching entity by title.
+        
+        Returns entity dict with 'id', 'metadata', 'distance' or None.
+        Uses progressive matching: exact → partial → semantic.
+        """
+        results = self.vector_store.search(title, top_k=5)
+        if not results:
+            return None
+
+        target = title.lower().strip()
+
+        for entity in results:
+            entity_title = entity.get("metadata", {}).get("title", "").lower().strip()
+            if entity_title == target:
+                return entity
+
+        for entity in results:
+            entity_title = entity.get("metadata", {}).get("title", "").lower().strip()
+            distance = entity.get("distance", 1.0)
+            if (target in entity_title or entity_title in target) and distance < 0.5:
+                return entity
+
+        if results[0].get("distance", 1.0) < 0.2:
+            return results[0]
+
+        return None
+
+    def _format_entity(self, entity: dict, include_creator: bool = True) -> str:
+        """Format a single entity for display."""
+        meta = entity.get("metadata", {})
+        title = meta.get("title", "Unknown")
+        year = meta.get("year", "N/A")
+        genre = meta.get("genre", "N/A")
+        
+        base = f"{title} ({year}) - {genre}"
+        if include_creator:
+            creator = meta.get("director") or meta.get("author") or meta.get("creator", "Unknown")
+            return f"{base}, by {creator}"
+        return base
+
+    def _get_similar_titles(self, title: str, max_results: int = 3) -> list[str]:
+        """Get similar entity titles for suggestions."""
+        results = self.vector_store.search(title, top_k=max_results)
+        return [r.get("metadata", {}).get("title", "") for r in results if r]
+
     def _setup_tools(self):
         """Create tools and bind them to LLM."""
         vs = self.vector_store
+        find_entity = self._find_entity
+        format_entity = self._format_entity
+        get_similar = self._get_similar_titles
 
         @tool
-        def search_watchlist(query: str) -> str:
-            """Search the watchlist for movies matching a query (title, genre, director, actor, theme)."""
-            results = vs.search(query, top_k=10)
+        def search_collection(query: str, limit: int = 10) -> str:
+            """
+            Search the collection for entities matching a query.
+            
+            Args:
+                query: Search term - can be title, genre, creator, theme, or mood
+                limit: Maximum number of results to return (default: 10)
+            
+            Returns matching entities with title, year, genre, and creator.
+            """
+            results = vs.search(query, top_k=limit)
             if not results:
-                return "No movies found matching the search."
+                return "No entities found matching the search."
 
-            movies = []
-            for r in results:
-                m = r.get("metadata", {})
-                similarity = 1 - r.get("distance", 1)
-                if similarity > 0.3:
-                    movies.append(
-                        f"- {m.get('title', 'Unknown')} ({m.get('year', 'N/A')}) - {m.get('genre', 'N/A')}, directed by {m.get('director', 'Unknown')}"
-                    )
+            # Filter by relevance (similarity > 0.3)
+            matches = [r for r in results if (1 - r.get("distance", 1)) > 0.3]
+            
+            if not matches:
+                return "No closely matching entities found."
 
-            if not movies:
-                return "No closely matching movies found."
-            return f"Found {len(movies)} movies:\n" + "\n".join(movies)
+            formatted = "\n".join(f"- {format_entity(m)}" for m in matches)
+            return f"Found {len(matches)} entities:\n{formatted}"
 
         @tool
-        def get_all_movies() -> str:
-            """Get all movies in the watchlist."""
-            all_movies = vs.get_all_movies()
-            if not all_movies:
-                return "The watchlist is empty."
+        def get_all_entities(limit: int = 50) -> str:
+            """
+            Get all entities in the collection.
+            
+            Args:
+                limit: Maximum number of entities to return (default: 50)
+            
+            Returns list of all entities with title, year, and genre.
+            """
+            all_entities = vs.get_all()
+            if not all_entities:
+                return "The collection is empty."
 
-            movies = []
-            for r in all_movies:
-                m = r.get("metadata", {})
-                movies.append(
-                    f"- {m.get('title', 'Unknown')} ({m.get('year', 'N/A')}) - {m.get('genre', 'N/A')}"
-                )
-
-            return f"Watchlist ({len(movies)} movies):\n" + "\n".join(movies)
+            entities = all_entities[:limit]
+            formatted = "\n".join(
+                f"- {format_entity(e, include_creator=False)}" for e in entities
+            )
+            
+            total = len(all_entities)
+            shown = len(entities)
+            header = f"Collection ({total} entities)"
+            if shown < total:
+                header += f" - showing first {shown}"
+            
+            return f"{header}:\n{formatted}"
 
         @tool
-        def count_movies() -> str:
-            """Get the total number of movies in the watchlist."""
+        def count_entities() -> str:
+            """Get the total number of entities in the collection."""
             count = vs.count()
-            return f"There are {count} movies in the watchlist."
+            return f"There are {count} entities in the collection."
 
         @tool
-        def delete_movie(title: str) -> str:
-            """Delete a movie from the watchlist by title."""
-            results = vs.search(title, top_k=5)
-            if not results:
-                return f"Movie '{title}' not found in watchlist."
+        def delete_entity(title: str) -> str:
+            """
+            Delete an entity from the collection by title.
+            
+            Args:
+                title: The title of the entity to delete (exact or partial match)
+            
+            Will try to find the best match and delete it.
+            If no exact match, suggests similar titles.
+            """
+            entity = find_entity(title)
+            
+            if entity:
+                entity_title = entity.get("metadata", {}).get("title", "Unknown")
+                entity_id = entity.get("id")
+                
+                if vs.delete(entity_id):
+                    return f"Successfully deleted '{entity_title}' from collection."
+                return f"Failed to delete '{entity_title}' - please try again."
 
-            target_title_clean = title.lower().strip()
+            suggestions = get_similar(title)
+            if suggestions:
+                return f"Entity '{title}' not found. Did you mean: {', '.join(suggestions)}?"
+            return f"Entity '{title}' not found in collection."
 
-            for movie in results:
-                movie_title = movie.get("metadata", {}).get("title", "")
-                if movie_title.lower().strip() == target_title_clean:
-                    imdb_id = movie.get("id")
-                    if vs.delete_movie(imdb_id):
-                        return f"Successfully deleted '{movie_title}' from watchlist."
-                    return f"Failed to delete '{movie_title}'."
+        @tool
+        def check_entity(title: str) -> str:
+            """
+            Check if a specific entity exists in the collection.
+            
+            Args:
+                title: The title of the entity to check
+            
+            Returns whether the entity exists and its details if found.
+            """
+            entity = find_entity(title)
+            
+            if entity:
+                return f"Yes, you have '{format_entity(entity)}' in your collection."
+            
+            suggestions = get_similar(title)
+            if suggestions:
+                return f"'{title}' is not in your collection. Similar items you have: {', '.join(suggestions)}"
+            return f"'{title}' is not in your collection."
 
-            for movie in results:
-                movie_title = movie.get("metadata", {}).get("title", "")
-                movie_title_clean = movie_title.lower().strip()
-
-                distance = movie.get("distance", 1.0)
-
-                if (
-                    target_title_clean in movie_title_clean
-                    or movie_title_clean in target_title_clean
-                ) and distance < 0.5:
-                    imdb_id = movie.get("id")
-                    if vs.delete_movie(imdb_id):
-                        return f"Successfully deleted '{movie_title}' from watchlist (matched '{title}')."
-                    return f"Failed to delete '{movie_title}'."
-
-            top_match = results[0]
-            if top_match.get("distance", 1.0) < 0.2:
-                movie_title = top_match.get("metadata", {}).get("title", "")
-                imdb_id = top_match.get("id")
-                if vs.delete_movie(imdb_id):
-                    return f"Successfully deleted '{movie_title}' from watchlist."
-
-            found_titles = [m.get("metadata", {}).get("title", "") for m in results[:3]]
-            return f"Could not find exact match for '{title}'. Did you mean one of these? {', '.join(found_titles)}"
-
-        self.tools = [search_watchlist, get_all_movies, count_movies, delete_movie]
+        self.tools = [search_collection, get_all_entities, count_entities, delete_entity, check_entity]
         self.tool_map = {t.name: t for t in self.tools}
         self.llm_with_tools = self.llm.bind_tools(self.tools)
+
 
     @classmethod
     def get_config(cls) -> AgentConfig:
         return AgentConfig(
             agent_id="librarian",
-            name="MLibrarian",
-            description="STORAGE agent. USE FOR: checking if some entity exist ('do i have X?'), searching your existing content, counting entities, deleting entities.",
+            name="Librarian",
+            description="STORAGE agent. USE FOR: checking if entities exist ('do I have X?'), searching your collection, counting entities, deleting entities.",
             patterns=["check", "do i have", "in my", "delete", "remove", "how many"],
             capabilities=[
                 "Check if entities exist in storage",
-                "Search existing storage",
+                "Search existing collection",
                 "Count and filter entities",
                 "Delete entities from storage",
             ],
@@ -135,7 +204,7 @@ class Librarian(BaseAgent):
                 "Do I have Inception?",
                 "How many Tom Hanks movies do I have?",
                 "Remove The Matrix",
-                "Show me my sci-fi movies",
+                "Show me my sci-fi collection",
             ],
         )
 
@@ -149,15 +218,15 @@ class Librarian(BaseAgent):
         ]
 
         max_iterations = 5
-        executed_tools = set()
+        executed_tools: set[str] = set()
         deleted_count = 0
 
-        for i in range(max_iterations):
+        for iteration in range(max_iterations):
             response = self.llm_with_tools.invoke(messages)
             messages.append(response)
 
             if not response.tool_calls:
-                self.log_success(f"Completed in {i + 1} iteration(s)")
+                self.log(f"Completed in {iteration + 1} iteration(s)", style="green")
                 return {
                     "query": query,
                     "response": response.content,
@@ -170,23 +239,24 @@ class Librarian(BaseAgent):
             for tool_call in response.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
+                call_signature = f"{tool_name}:{tool_args}"
 
-                call_signature = f"{tool_name}:{str(tool_args)}"
                 if call_signature in executed_tools:
-                    self.log(f"Skipping duplicate call: {call_signature}")
-                    result = f"Error: You already called {tool_name} with these arguments. Do not retry the same thing repeatedly."
-                else:
-                    self.log(f"Tool: {tool_name}({tool_args})")
-                    executed_tools.add(call_signature)
+                    self.log(f"Skipping duplicate: {call_signature}")
+                    result = f"Already called {tool_name} with these arguments. Try something different."
+                    messages.append(ToolMessage(content=result, tool_call_id=tool_call["id"]))
+                    continue
 
-                    tool_fn = self.tool_map.get(tool_name)
-                    if tool_fn:
-                        result = tool_fn.invoke(tool_args)
-                        # Track deletions
-                        if tool_name == "delete_movie" and "Successfully deleted" in str(result):
-                            deleted_count += 1
-                    else:
-                        result = f"Unknown tool: {tool_name}"
+                executed_tools.add(call_signature)
+                self.log(f"Tool: {tool_name}({tool_args})")
+
+                tool_fn = self.tool_map.get(tool_name)
+                if not tool_fn:
+                    result = f"Unknown tool: {tool_name}"
+                else:
+                    result = tool_fn.invoke(tool_args)
+                    if tool_name == "delete_entity" and "Successfully deleted" in str(result):
+                        deleted_count += 1
 
                 messages.append(ToolMessage(content=result, tool_call_id=tool_call["id"]))
 
@@ -200,48 +270,29 @@ class Librarian(BaseAgent):
         }
 
     def store_items(self, items: List[Any]) -> dict:
-        """Store items (movies, books, etc) to watchlist - generic method."""
+        """Store items (entities) to collection."""
         self.log(f"Storing {len(items)} items")
 
-        stored = []
-        skipped = []
-
-        import uuid
+        stored, skipped = [], []
 
         for item in items:
             if hasattr(item, "to_dict"):
                 data = item.to_dict()
-                if hasattr(item, "to_document"):
-                    document = item.to_document()
-                else:
-                    document = str(data)
+                document = item.to_document() if hasattr(item, "to_document") else str(data)
             elif isinstance(item, dict):
                 data = item
-                document = str(data)
+                document = self._build_document(data)
             else:
-                self.log(f"Skipping unknown item type: {type(item)}")
+                self.log(f"Skipping unknown type: {type(item)}")
                 continue
 
             item_id = data.get("imdb_id") or data.get("id") or str(uuid.uuid4())
             title = data.get("title") or data.get("name") or "Unknown Title"
 
-            if isinstance(item, dict):
-                doc_parts = [f"Title: {title}"]
-                for k, v in data.items():
-                    if k not in ["title", "name", "id", "imdb_id", "poster_url"] and v:
-                        doc_parts.append(f"{k.capitalize()}: {v}")
-                document = "\n".join(doc_parts)
+            metadata = self._normalize_metadata(data)
+            metadata["title"] = title
 
-            safe_metadata = {}
-            for k, v in data.items():
-                if isinstance(v, (str, int, float, bool)):
-                    safe_metadata[k] = v
-                else:
-                    safe_metadata[k] = str(v)
-
-            safe_metadata["title"] = title
-
-            if self.vector_store.add_movie(item_id, document, safe_metadata):
+            if self.vector_store.add(item_id, document, metadata):
                 stored.append(title)
                 self.log_success(f"Stored: {title}")
             else:
@@ -255,6 +306,25 @@ class Librarian(BaseAgent):
             "message": f"Successfully stored {len(stored)} items. Skipped {len(skipped)} duplicates.",
         }
 
+    def _build_document(self, data: dict) -> str:
+        """Build searchable document from entity data."""
+        title = data.get("title") or data.get("name") or "Unknown"
+        parts = [f"Title: {title}"]
+        
+        skip_keys = {"title", "name", "id", "imdb_id", "poster_url"}
+        for key, value in data.items():
+            if key not in skip_keys and value:
+                parts.append(f"{key.capitalize()}: {value}")
+        
+        return "\n".join(parts)
+
+    def _normalize_metadata(self, data: dict) -> dict:
+        """Normalize metadata to only primitive types."""
+        return {
+            k: v if isinstance(v, (str, int, float, bool)) else str(v)
+            for k, v in data.items()
+        }
+
     def store_movies(self, movies: List[Any]) -> dict:
-        """Alias for store_items."""
+        """Alias for store_items (backward compatibility)."""
         return self.store_items(movies)

@@ -25,7 +25,7 @@ class MovieCritic(BaseAgent):
         return AgentConfig(
             agent_id="movie_critic",
             name="Movie Critic",
-            description="Movie recommendation and search agent. USE FOR: recommendations ('recommend', 'suggest'), searching existing watchlist ('find', 'want', 'looking for'), mood-based queries ('something dark', 'feeling emotional'), preference queries ('similar to X', 'I need'). Searches your personal watchlist and provides personalized suggestions.",
+            description="RECOMMENDATION agent with DIRECT ACCESS to user's collection via RAG. USE FOR: recommendations ('recommend', 'suggest'), mood-based queries ('something dark', 'want something like'). Searches collection directly and provides COMPLETE answers - no need to call other agents after this one.",
             patterns=["recommend", "suggest", "want", "looking for", "find", "query"],
             capabilities=[
                 "Query expansion for vague requests",
