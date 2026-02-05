@@ -1,192 +1,140 @@
-import re
-from typing import Optional, TypedDict
+"""
+Dispatcher Agent - Simple LLM-based router.
 
-from langgraph.graph import END, StateGraph
+Uses LLM to decide which agent to call, but without tool-calling.
+Just provides agent list in context and LLM returns next agent ID.
+"""
+
+import json
+import re
+from typing import Any
 
 from agents.base_agent import AgentConfig, BaseAgent
 from agents.registry import AgentRegistry
 
-from .prompts import routing_prompt
-
-
-class RoutingState(TypedDict):
-    """State for agent routing."""
-
-    query: str
-    target_agent: str
-    clean_query: str
-    routing_method: str
-    result: Optional[dict]
+from .prompts import next_step_prompt, routing_prompt
 
 
 class Dispatcher(BaseAgent):
     """
-    Simple routing agent - matches patterns and routes to appropriate agents.
-
-    No complex intent classification, just pattern matching with LLM fallback.
+    Simple LLM router - no tool-calling, just agent selection.
     """
+
+    MAX_ITERATIONS = 3
 
     @classmethod
     def get_config(cls) -> AgentConfig:
         return AgentConfig(
             agent_id="dispatcher",
             name="Dispatcher",
-            description="Routes queries to appropriate agents based on patterns",
+            description="Routes queries to appropriate agents",
             patterns=[],
-            capabilities=["Pattern matching", "Agent routing"],
+            capabilities=["Agent routing", "Context passing"],
             example_queries=[],
         )
 
     def __init__(self, model: str | None = None, verbose: bool = False):
         super().__init__(model, verbose)
-        self.graph = self._build_graph()
 
     def process(self, query: str) -> dict:
-        """Route query to appropriate agent."""
-        initial_state: RoutingState = {
-            "query": query,
-            "target_agent": "",
-            "clean_query": query,
-            "routing_method": "",
-            "result": None,
-        }
+        """Route query through agents until complete."""
+        self.log(f"Query: {query}")
 
-        result_state = self.graph.invoke(initial_state)
-        return result_state.get("result", {})
+        context: dict[str, Any] = {}
+        agents_text = self._get_agents_text()
+        visited_agents: set[str] = set()
+        last_result: dict[str, Any] = {}
 
-    def _build_graph(self) -> StateGraph:
-        """Build simple routing workflow."""
-        workflow = StateGraph(RoutingState)
+        for i in range(self.MAX_ITERATIONS):
+            if i == 0:
+                prompt = routing_prompt(query, agents_text)
+            else:
+                prompt = next_step_prompt(query, last_result, agents_text, list(visited_agents))
 
-        workflow.add_node("route", self._route_query)
-        workflow.add_node("execute", self._execute_agent)
-
-        workflow.set_entry_point("route")
-        workflow.add_edge("route", "execute")
-        workflow.add_edge("execute", END)
-
-        return workflow.compile()
-
-    def _route_query(self, state: RoutingState) -> RoutingState:
-        """Route query to agent based on patterns."""
-        query = state["query"]
-
-        agent_id, clean_query = self._match_patterns(query)
-        if agent_id:
-            state.update(
-                {
-                    "target_agent": agent_id,
-                    "clean_query": clean_query,
-                    "routing_method": "pattern",
-                }
-            )
-            self.log(f"Pattern matched → {agent_id}")
-            return state
-
-        agent_id, clean_query = self._route_with_llm(query)
-        state.update(
-            {
-                "target_agent": agent_id,
-                "clean_query": clean_query,
-                "routing_method": "llm",
-            }
-        )
-        self.log(f"LLM routed → {agent_id}")
-        return state
-
-    def _match_patterns(self, query: str) -> tuple[str, str]:
-        """Try to match query against agent patterns."""
-        query_lower = query.lower().strip()
-
-        for agent_config in AgentRegistry.get_configs().values():
-            if agent_config.agent_id == "dispatcher":
-                continue
-
-            for pattern in agent_config.patterns:
-                pattern_clean = pattern.rstrip(":").strip()
-                if query_lower.startswith(f"{pattern_clean}:") or query_lower.startswith(
-                    f"{pattern_clean} "
-                ):
-                    clean_query = query[len(pattern_clean) + 1 :].strip()
-                    return agent_config.agent_id, clean_query
-
-        return "", query
-
-    def _route_with_llm(self, query: str) -> tuple[str, str]:
-        """Use LLM to determine which agent to route to."""
-        prompt = self._build_routing_prompt(query)
-
-        try:
             response = self.llm.invoke(prompt)
-            return self._parse_routing_response(response.content.strip(), query)
-        except Exception as e:
-            self.log_error(f"LLM routing failed: {e}")
-            return "movie_critic", query
+            decision = self._parse_json(response.content)
 
-    def _build_routing_prompt(self, query: str) -> str:
-        """Build prompt for LLM routing."""
-        agents = []
-        examples = []
+            if decision.get("complete"):
+                self.log_success(f"Completed in {i + 1} step(s)")
+                return {
+                    "response": decision.get("response", last_result.get("response", "")),
+                    "success": True,
+                }
 
-        for agent_config in AgentRegistry.get_configs().values():
-            if agent_config.agent_id == "dispatcher":
-                continue
+            agent_id = decision.get("next_agent")
+            if not agent_id:
+                break
+            
+            # Prevent calling the same agent twice in a workflow
+            if agent_id in visited_agents:
+                self.log(f"Agent {agent_id} already visited, completing workflow")
+                return {
+                    "response": last_result.get("response") or last_result.get("message", "Operation completed"),
+                    "success": True,
+                }
+            
+            visited_agents.add(agent_id)
+            self.log(f"→ {agent_id}")
 
-            agents.append(f"- {agent_config.agent_id}: {agent_config.description}")
+            agent_class = AgentRegistry.get_agent(agent_id)
+            if not agent_class:
+                return {"error": f"Agent {agent_id} not found", "success": False}
 
-            if agent_config.example_queries:
-                example = agent_config.example_queries[0]
-                examples.append(f'"{example}" → {agent_config.agent_id}')
-
-        agents_text = "\n".join(agents)
-        examples_text = "\n".join(examples[:3])
-        agent_ids = [
-            config.agent_id
-            for config in AgentRegistry.get_configs().values()
-            if config.agent_id != "dispatcher"
-        ]
-
-        return routing_prompt(query, agents_text, examples_text, agent_ids)
-
-    def _parse_routing_response(self, content: str, fallback_query: str) -> tuple[str, str]:
-        """Parse LLM routing response."""
-        json_match = re.search(r"\{[^}]+\}", content)
-        if not json_match:
-            return "movie_critic", fallback_query
-
-        try:
-            import json
-
-            result = json.loads(json_match.group())
-            agent_id = result.get("agent", "movie_critic")
-            clean_query = result.get("clean_query", fallback_query)
-            return agent_id, clean_query
-        except:
-            return "movie_critic", fallback_query
-
-    def _execute_agent(self, state: RoutingState) -> RoutingState:
-        """Execute the target agent."""
-        agent_id = state["target_agent"]
-        clean_query = state["clean_query"]
-
-        agent_class = AgentRegistry.get_agent(agent_id)
-        if not agent_class:
-            state["result"] = {"error": f"Agent '{agent_id}' not found"}
-            return state
-
-        try:
             agent = agent_class(verbose=self.verbose)
-            result = agent.process(clean_query)
 
-            if isinstance(result, dict):
-                result["routed_to"] = agent_id
-                result["routing_method"] = state["routing_method"]
+            # If we have data from previous agent, try storing first
+            if context.get("data") and hasattr(agent, "store_items"):
+                last_result = agent.store_items(context["data"])
+                context["data"] = None  # Clear after storing
+                
+                # Storage complete = workflow complete
+                if last_result.get("stored_count", 0) > 0 or last_result.get("skipped_count", 0) > 0:
+                    self.log_success(f"Storage complete in {i + 1} step(s)")
+                    return {
+                        "response": last_result.get("message", "Movies added to watchlist"),
+                        "success": True,
+                        **last_result,
+                    }
+            else:
+                last_result = agent.process(decision.get("query", query))
+                # Capture any data for next agent
+                for key in ["items", "data", "results"]:
+                    if key in last_result and last_result[key]:
+                        context["data"] = last_result[key]
+                        break
 
-            state["result"] = result
-            self.log_success(f"Executed {agent_id}")
+        return last_result if last_result else {"error": "No result", "success": False}
 
-        except Exception as e:
-            self.log_error(f"Error executing {agent_id}: {e}")
-            state["result"] = {"error": f"Execution failed: {str(e)}"}
+    def _get_agents_text(self) -> str:
+        """Get agent list for prompt."""
+        lines = []
+        for config in AgentRegistry.get_configs().values():
+            if config.agent_id != "dispatcher":
+                lines.append(f"- {config.agent_id}: {config.description}")
+        return "\n".join(lines)
 
-        return state
+    def _parse_json(self, content) -> dict:
+        """Parse JSON from LLM response."""
+        # Handle list content (multi-part responses from Gemini)
+        if isinstance(content, list):
+            # Extract text from list of dicts with 'text' field
+            texts = []
+            for part in content:
+                if isinstance(part, dict) and 'text' in part:
+                    texts.append(part['text'])
+                else:
+                    texts.append(str(part))
+            content = " ".join(texts)
+        if not isinstance(content, str):
+            content = str(content)
+        
+        content = content.strip()
+        if content.startswith("```"):
+            content = re.sub(r"```\w*\n?", "", content).strip()
+        match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+        return {}
