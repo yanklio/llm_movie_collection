@@ -1,9 +1,10 @@
 import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from rich.console import Console
 
 load_dotenv()
@@ -38,20 +39,19 @@ class BaseAgent(ABC):
 
     def __init__(self, model: str | None = None, verbose: bool = False):
         """Initialize the agent with LLM."""
-        self.model_name = model or os.getenv("LLM_MODEL", "openai/gpt-oss-20b:free")
+        self.model_name = model or os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
         self.verbose = verbose
         self.llm = self._init_llm()
 
-    def _init_llm(self) -> ChatOpenAI:
-        """Initialize the LLM client."""
-        api_key = os.getenv("OPENROUTER_API_KEY")
+    def _init_llm(self) -> ChatGroq:
+        """Initialize the Groq LLM client."""
+        api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            raise ValueError("OPENROUTER_API_KEY not found in environment")
+            raise ValueError("GROQ_API_KEY not found in environment")
 
-        return ChatOpenAI(
+        return ChatGroq(
             model=self.model_name,
-            openai_api_key=api_key,
-            openai_api_base="https://openrouter.ai/api/v1",
+            api_key=api_key,
             temperature=0.3,
         )
 
@@ -78,13 +78,24 @@ class BaseAgent(ABC):
         """
         pass
 
+    @contextmanager
+    def thinking(self, message: str = "Thinking"):
+        """Context manager that shows a spinner while LLM is processing."""
+        if self.verbose:
+            with console.status(f"[cyan]{message}...[/cyan]", spinner="dots") as status:
+                yield status
+        else:
+            yield None
+
     def log(self, message: str, style: str = "dim"):
         """Log a message to the console."""
-        console.print(f"[{style}]{message}[/{style}]")
+        if self.verbose:
+            console.print(f"[{style}]{message}[/{style}]")
 
     def log_info(self, message: str):
         """Log an info message with icon."""
-        console.print(f"[blue]ℹ[/blue] {message}")
+        if self.verbose:
+            console.print(f"[blue]ℹ[/blue] {message}")
 
     def log_success(self, message: str):
         """Log a success message with icon."""
@@ -93,3 +104,9 @@ class BaseAgent(ABC):
     def log_error(self, message: str):
         """Log an error message with icon."""
         console.print(f"[red]✗[/red] {message}")
+
+    def log_model(self, action: str):
+        """Log what the model is doing."""
+        if self.verbose:
+            agent_name = self.get_config().name
+            console.print(f"[yellow]⚡[/yellow] [bold]{agent_name}[/bold] → {action} [dim]({self.model_name})[/dim]")
