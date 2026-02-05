@@ -8,9 +8,9 @@ the dispatcher logic.
 from typing import Dict, Type
 
 from agents.base_agent import AgentConfig, BaseAgent
-from agents.critic import Critic
 from agents.librarian import Librarian
-from agents.movie_collector import MovieCollector
+from agents.movie_critic import MovieCritic
+from agents.scout import Scout
 
 
 class AgentRegistry:
@@ -42,6 +42,6 @@ class AgentRegistry:
         return {agent_id: agent_class.get_config() for agent_id, agent_class in cls._agents.items()}
 
 
-AgentRegistry.register(MovieCollector)
+AgentRegistry.register(Scout)
 AgentRegistry.register(Librarian)
-AgentRegistry.register(Critic)
+AgentRegistry.register(MovieCritic)
