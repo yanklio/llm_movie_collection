@@ -38,9 +38,15 @@ class VectorStore:
             metadata={"description": "Entity documents for RAG retrieval"}
         )
     
-    def add(self, entity_id: str, document: str, metadata: dict) -> bool:
+    def add(self, entity_id: str, document: str, metadata: dict, entity_type: str = "movie") -> bool:
         """
         Add an entity document to the vector store.
+        
+        Args:
+            entity_id: Unique identifier for the entity.
+            document: Text content to index.
+            metadata: Additional metadata.
+            entity_type: Type of entity (e.g., "movie", "review").
         
         Returns:
             True if added, False if already exists.
@@ -49,6 +55,8 @@ class VectorStore:
         if existing["ids"]:
             return False
         
+        metadata["entity_type"] = entity_type
+        
         self.collection.add(
             ids=[entity_id],
             documents=[document],
@@ -56,16 +64,60 @@ class VectorStore:
         )
         return True
     
-    def search(self, query: str, top_k: int = 5) -> list[dict]:
+    def search(self, query: str, top_k: int = 5, entity_type: Optional[str] = None, filters: Optional[dict] = None) -> list[dict]:
         """
         Search for similar entities based on query.
+        
+        Args:
+            query: Search query text.
+            top_k: Number of results to return.
+            entity_type: Optional filter by entity type.
+            filters: Additional metadata filters (ChromaDB where clause).
         
         Returns:
             List of dicts with 'id', 'document', 'metadata', 'distance'.
         """
+        conditions = []
+        if entity_type:
+            conditions.append({"entity_type": entity_type})
+        
+        if filters:
+            for k, v in filters.items():
+                if v is None: continue
+                
+                # Handle simplified year ranges from agents
+                if k == "year_min":
+                    conditions.append({"year": {"$gte": int(v)}})
+                elif k == "year_max":
+                    conditions.append({"year": {"$lte": int(v)}})
+                elif k == "rating" and isinstance(v, (int, float)):
+                    # Handle rating threshold
+                    conditions.append({"rating": {"$gte": v}})
+                elif k == "year":
+                    # Try to cast year to int for exact match
+                    try:
+                        conditions.append({"year": int(str(v))})
+                    except:
+                        conditions.append({"year": v})
+                # Check if value is a dictionary with multiple operators (e.g. range passed explicitly)
+                elif isinstance(v, dict) and len(v) > 1:
+                    # ChromaDB req: split {'$gte': 2000, '$lte': 2010} into multiple dicts
+                    for op, val in v.items():
+                        conditions.append({k: {op: val}})
+                else:
+                    conditions.append({k: v})
+        
+        if not conditions:
+            where_filter = None
+        elif len(conditions) == 1:
+            where_filter = conditions[0]
+        else:
+            where_filter = {"$and": conditions}
+            
         results = self.collection.query(
             query_texts=[query],
             n_results=top_k,
+            where=where_filter,
             include=["documents", "metadatas", "distances"]
         )
         
@@ -106,9 +158,19 @@ class VectorStore:
         self.collection.delete(ids=[entity_id])
         return True
     
-    def get_all(self) -> list[dict]:
-        """Get all entities in the collection."""
-        result = self.collection.get(include=["documents", "metadatas"])
+    def get_all(self, entity_type: Optional[str] = None) -> list[dict]:
+        """
+        Get all entities in the collection.
+        
+        Args:
+            entity_type: Optional filter by entity type.
+        """
+        where_filter = {"entity_type": entity_type} if entity_type else None
+        
+        result = self.collection.get(
+            where=where_filter,
+            include=["documents", "metadatas"]
+        )
         
         items = []
         for i, doc_id in enumerate(result["ids"]):

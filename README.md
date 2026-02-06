@@ -48,8 +48,20 @@ It uses a team of specialized AI agents to fetch new content, manage a local vec
 
 Run the main script to interact with the system.
 
-### Conversational Mode (Recommended)
-Let the Dispatcher handle everything:
+### Interactive Chat Mode (Recommended)
+Start a continuous conversation session:
+
+```bash
+python main.py --chat
+```
+
+Once in chat mode, you can type naturally:
+- "Fetch Inception"
+- "Add it to my collection"
+- "Suggest similar movies"
+
+### Conversational Mode (One-Shot)
+Execute a single command via the Dispatcher:
 
 ```bash
 # Add a movie

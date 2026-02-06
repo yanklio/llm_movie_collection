@@ -1,3 +1,4 @@
+import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.base_agent import AgentConfig, BaseAgent
@@ -8,6 +9,7 @@ from agents.movie_critic.prompts import (
     get_synthesis_prompt,
 )
 from storage.vector_store import VectorStore
+from utils.parsing import extract_json_from_response
 
 
 class MovieCritic(BaseAgent):
@@ -60,21 +62,24 @@ class MovieCritic(BaseAgent):
     def query_movies(self, request: CriticRequest) -> CriticResponse:
         self.log(f"Processing query: {request.query}")
 
-        expanded_query = self._expand_query(request.query)
+        # 1. Expand Query
+        expanded_query, filters = self._expand_query(request.query)
         self.log(f"Expanded query: {expanded_query}")
+        
+        # 2. Retrieve Movies
+        movie_results = self._retrieve_movies(expanded_query, request.top_k, filters)
+        movies = [MovieResult(**result) for result in movie_results]
+        
+        # 3. Retrieve Context (Reviews)
+        review_results = self._retrieve_reviews(expanded_query)
 
-        results = self.vector_store.search(expanded_query, top_k=request.top_k)
-
-        movies = [MovieResult(**result) for result in results]
-
+        # 4. Generate Response
         if not movies:
             self.log_error("No movies found in knowledge base")
-            response_text = (
-                "I don't have any movies in my database yet. Please add some movies first!"
-            )
+            response_text = "I don't have any movies in my database yet. Please add some movies first!"
         else:
             self.log_success(f"Found {len(movies)} relevant movies")
-            response_text = self._synthesize(request.query, results)
+            response_text = self._synthesize(request.query, movie_results, review_results)
 
         return CriticResponse(
             query=request.query,
@@ -83,22 +88,47 @@ class MovieCritic(BaseAgent):
             response=response_text,
         )
 
-    def _expand_query(self, user_query: str) -> str:
+    def _retrieve_movies(self, query: str, top_k: int, filters: dict) -> list[dict]:
+        """Execute vector search for movies."""
+        return self.vector_store.search(
+            query, 
+            top_k=top_k, 
+            entity_type="movie",
+            filters=filters
+        )
+
+    def _retrieve_reviews(self, query: str) -> list[dict]:
+        """Execute vector search for reviews."""
+        results = self.vector_store.search(query, top_k=3, entity_type="review")
+        if results:
+            self.log_success(f"Found {len(results)} relevant reviews for context")
+        return results
+
+    def _expand_query(self, user_query: str) -> tuple[str, dict]:
         prompt = get_query_expansion_prompt(user_query)
 
         try:
             response = self.llm.invoke(prompt)
-            expanded = response.content.strip()
-            return expanded if expanded else user_query
+            content = response.content.strip()
+            data = extract_json_from_response(content)
+            
+            search_terms = data.get("search_terms", user_query)
+            filters = data.get("filters", {})
+            
+            final_filters = {k: v for k, v in filters.items() if v is not None}
+            
+            return search_terms, final_filters
+            
         except Exception as e:
             self.log_error(f"Query expansion failed: {e}")
-            return user_query
+            self.log_error(f"Failed content: {content!r}")
+            return user_query, {}
 
-    def _synthesize(self, user_query: str, results: list[dict]) -> str:
+    def _synthesize(self, user_query: str, results: list[dict], reviews: list[dict] = None) -> str:
         if not self.llm:
             return self._fallback_response(results)
 
-        context = self._build_context(results)
+        context = self._build_context(results, reviews)
         content = get_synthesis_prompt(user_query, context)
 
         messages = [
@@ -113,15 +143,29 @@ class MovieCritic(BaseAgent):
             self.log_error(f"Synthesis failed: {e}")
             return self._fallback_response(results)
 
-    def _build_context(self, results: list[dict]) -> str:
+    def _build_context(self, results: list[dict], reviews: list[dict] = None) -> str:
         context_parts = []
+        
+        if reviews:
+            context_parts.append("RELEVANT USER REVIEWS:")
+            for i, review in enumerate(reviews, 1):
+                doc = review.get("document", "")
+                meta = review.get("metadata", {})
+                title = meta.get("title", "Unknown")
+                context_parts.append(f"Review {i} ({title}):\n{doc}\n---")
+            context_parts.append("\nAVAILABLE MOVIES:")
 
         for i, result in enumerate(results, 1):
             document = result.get("document", "")
             similarity_score = result.get("distance", 0)
+            
+            meta = result.get("metadata", {})
+            title = meta.get("title", "Unknown")
+            year = meta.get("year", "N/A")
+            genre = meta.get("genre", "N/A")
 
             context_parts.append(
-                f"Movie {i}:\n{document}\n\nSimilarity Score: {similarity_score:.3f}\n---"
+                f"Movie {i} - {title} ({year}) [{genre}]:\n{document}\n\nSimilarity Score: {similarity_score:.3f}\n---"
             )
 
         return "\n".join(context_parts)

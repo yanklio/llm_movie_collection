@@ -56,10 +56,21 @@ Examples:
         help="Enable verbose mode to see agent reasoning and tool calls",
     )
 
+    parser.add_argument(
+        "--chat",
+        "-c",
+        action="store_true",
+        help="Start interactive chat mode",
+    )
+
     args = parser.parse_args()
 
     if args.list_agents:
         list_agents()
+        return
+
+    if args.chat:
+        run_chat_mode(args.model, args.verbose)
         return
 
     if not args.query:
@@ -72,13 +83,53 @@ Examples:
     console.print(f"[dim]Query: {query}[/dim]\n")
 
     if args.agent:
-        run_direct_agent(args.agent, query, args.model)
+        run_direct_agent(args.agent, query, args.model, args.verbose)
         return
 
     run_orchestrated(query, args.model, args.verbose)
 
 
-def run_direct_agent(agent_id: str, query: str, model: str | None = None):
+def run_chat_mode(model: str | None = None, verbose: bool = False):
+    """Run interactive chat session with history."""
+    console.print("[bold cyan]Movie RAG System - Interactive Chat[/bold cyan]")
+    console.print("[dim]Type 'exit' or 'quit' to end session[/dim]\n")
+    
+    dispatcher = Dispatcher(model=model, verbose=verbose)
+    history = []
+    
+    while True:
+        try:
+            query = console.input("[bold green]You > [/bold green]")
+            if not query.strip():
+                continue
+                
+            if query.lower() in ("exit", "quit"):
+                console.print("[yellow]Goodbye![/yellow]")
+                break
+            
+            history.append({"role": "user", "content": query})
+            
+            with console.status("[dim]Thinking...[/dim]"):
+                result = dispatcher.process(query, chat_history=history)
+            
+            display_result(result)
+            
+            # Extract text response for history
+            response_text = result.get("response") or result.get("message", "")
+            if not response_text and result.get("items"):
+                response_text = f"Found {len(result['items'])} items."
+            
+            if response_text:
+                history.append({"role": "assistant", "content": response_text})
+                
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Goodbye![/yellow]")
+            break
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+
+
+def run_direct_agent(agent_id: str, query: str, model: str | None = None, verbose: bool = False):
     """Run a specific agent directly (bypass orchestration)."""
     agent_class = AgentRegistry.get_agent(agent_id)
     if not agent_class:
@@ -92,7 +143,7 @@ def run_direct_agent(agent_id: str, query: str, model: str | None = None):
     console.print(f"[yellow]Agent:[/yellow] {config.name} (direct)")
     console.print("[dim]" + "=" * 60 + "[/dim]\n")
 
-    agent = agent_class(model=model)
+    agent = agent_class(model=model, verbose=verbose)
     result = agent.process(query)
     display_result(result)
 

@@ -192,13 +192,16 @@ class MovieAPITool:
                         movie_details = self._get_movie_details(movie_id)
                         movies.append(
                             {
-                                "Title": movie.get("title", ""),
-                                "Year": movie.get("release_date", "")[:4]
-                                if movie.get("release_date")
-                                else "",
+                                "Title": movie_details.title,
+                                "Year": movie_details.year,
                                 "imdbID": movie_details.imdb_id,
                                 "Type": "movie",
-                                "Role": "Director",
+                                "Director": movie_details.director,
+                                "Actors": movie_details.actors,
+                                "Genre": movie_details.genre,
+                                "Plot": movie_details.plot,
+                                "Poster": movie_details.poster_url,
+                                "Rating": movie_details.imdb_rating,
                             }
                         )
                     except:
@@ -212,13 +215,17 @@ class MovieAPITool:
                     movie_details = self._get_movie_details(movie_id)
                     movies.append(
                         {
-                            "Title": movie.get("title", ""),
-                            "Year": movie.get("release_date", "")[:4]
-                            if movie.get("release_date")
-                            else "",
+                            "Title": movie_details.title,
+                            "Year": movie_details.year,
                             "imdbID": movie_details.imdb_id,
                             "Type": "movie",
                             "Role": "Actor",
+                            "Director": movie_details.director,
+                            "Actors": movie_details.actors,
+                            "Genre": movie_details.genre,
+                            "Plot": movie_details.plot,
+                            "Poster": movie_details.poster_url,
+                            "Rating": movie_details.imdb_rating,
                         }
                     )
                 except:
