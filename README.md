@@ -93,7 +93,7 @@ python main.py --agent check_entity "Do I have Inception?"  # uses Librarian
 ## 🏗️ Architecture
 
 - **Vector Store:** ChromaDB (stores entities with embeddings)
-- **Framework:** LangChain (LLM orchestration)
-- **LLM:** Groq (fast inference)
+- **Framework:** LangChain
+- **LLM:** Qwen (Groq API)
 
 See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
