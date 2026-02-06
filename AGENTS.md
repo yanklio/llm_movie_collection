@@ -24,10 +24,9 @@ graph TD
 **Role:** LLM-based routing and multi-agent workflow coordination
 
 **Capabilities:**
-- LLM-based agent selection
-- Multi-step workflow orchestration
-- Visited agent tracking (prevents loops)
-- Automatic completion detection (early exit optimization)
+- **Dynamic Routing:** Selects agents based on their registered capabilities (semantic matching), not hardcoded rules
+- **Context-Aware:** Maintains conversation history in interactive chat mode
+- **Multi-step workflow orchestration:** Prevents loops and manages state
 - **Entity Identification:** Distinguishes between "fetching new" (Scout), "checking stored" (Librarian), and "recommending" (Critic)
 
 ---
@@ -36,9 +35,9 @@ graph TD
 **Role:** Fetch NEW content from external APIs (TMDB)
 
 **Capabilities:**
-- Deep search for movies/people
-- Smart search strategy selection
-- Returns structured data for Librarian
+- **Smart Search Strategy:** Uses dispatch pattern to select best method (Person vs Title vs Keyword)
+- **Unified Normalization:** Standardizes data from diverse API endpoints
+- **Fallback Logic:** Robust heuristic search if LLM analysis fails
 - **Strict Scope:** Only searches for *new* content (never searches local DB)
 
 **Example Queries:**

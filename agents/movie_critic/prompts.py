@@ -14,19 +14,31 @@ Response format:
 - Simple bullet lists with dashes (-)"""
 
 
-QUERY_EXPANSION_TEMPLATE = """Expand this user query into searchable movie concepts.
+QUERY_EXPANSION_TEMPLATE = """Analyze this movie search query and extract search terms and metadata filters.
 
 User query: "{query}"
 
-Extract key concepts like:
-- Genres (action, sci-fi, drama, space, etc.)
-- Moods (dark, uplifting, tense, etc.)
-- Themes (love, adventure, survival, etc.)
+Return a JSON object with:
+- "search_terms": expanded list of semantic keywords (genres, moods, themes) as a single string
+- "filters": object containing any explicitly requested metadata:
+    - "director": name (e.g. "Zack Snyder")
+    - "year": exact year string (e.g. "2010")
+    - "year_min": start year int (e.g. 2000)
+    - "year_max": end year int (e.g. 2010)
+    - "rating": minimum rating as float (e.g. 7.0)
 
-Respond with a comma-separated list of searchable keywords only.
-Example: dark, sci-fi, space, adventure
+Example Input: "Scary movies by James Gunn from 2000 to 2010"
+Example Output:
+{{
+    "search_terms": "horror, scary, alien plague, monster, comedy",
+    "filters": {{
+        "director": "James Gunn",
+        "year_min": 2000,
+        "year_max": 2010
+    }}
+}}
 
-Expanded query:"""
+Response (JSON only):"""
 
 
 SYNTHESIS_TEMPLATE = """User Query: "{user_query}"

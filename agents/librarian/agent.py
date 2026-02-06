@@ -24,7 +24,19 @@ class Librarian(BaseAgent):
         self.vector_store = vector_store or VectorStore()
         self._setup_tools()
 
-
+    @tool
+    def search_entities(self, query: str, entity_type: str = "movie") -> str:
+        """
+        Search for entities (movies, reviews) in the database.
+        
+        Args:
+            query: The search query (e.g., "Inception", "funny sitcoms")
+            entity_type: Type of entity to search for ("movie" or "review")
+        """     
+        results = self.vector_store.search(query, top_k=5, entity_type=entity_type)
+        if not results:
+            return "No entities found matching the search."
+    
     def _find_entity(self, title: str) -> dict | None:
         """
         Find best matching entity by title.
@@ -94,10 +106,10 @@ class Librarian(BaseAgent):
             if not results:
                 return "No entities found matching the search."
 
-            # Filter by relevance (similarity > 0.3)
-            matches = [r for r in results if (1 - r.get("distance", 1)) > 0.3]
+            matches = [r for r in results if r.get("distance", 2.0) < 1.45]
             
             if not matches:
+                self.log(f"No matches found (closest dist: {results[0]['distance']:.3f} if results else 'None')")
                 return "No closely matching entities found."
 
             formatted = "\n".join(f"- {format_entity(m)}" for m in matches)
@@ -182,29 +194,60 @@ class Librarian(BaseAgent):
                 return f"'{title}' is not in your collection. Similar items you have: {', '.join(suggestions)}"
             return f"'{title}' is not in your collection."
 
-        self.tools = [search_collection, get_all_entities, count_entities, delete_entity, check_entity]
+        @tool
+        def add_review(movie_title: str, review_text: str) -> str:
+            """
+            Add a review for a movie.
+            
+            Args:
+                movie_title: Title of the movie being reviewed
+                review_text: The content of the review
+            """
+            movie = find_entity(movie_title)
+            movie_meta = movie.get("metadata", {}) if movie else {}
+            
+            # Create review entity
+            review_id = f"review_{uuid.uuid4()}"
+            metadata = {
+                "title": f"{movie_title} Review",
+                "related_movie": movie_title,
+                "entity_type": "review",
+                "author": "User"
+            }
+            
+            if movie_meta:
+                if "genre" in movie_meta:
+                    metadata["related_genre"] = movie_meta["genre"]
+            
+            if vs.add(review_id, review_text, metadata, entity_type="review"):
+                return f"Successfully added review for '{movie_title}'."
+            else:
+                return "Failed to add review."
+
+        self.tools = [search_collection, get_all_entities, count_entities, delete_entity, check_entity, add_review]
         self.tool_map = {t.name: t for t in self.tools}
         self.llm_with_tools = self.llm.bind_tools(self.tools)
-
 
     @classmethod
     def get_config(cls) -> AgentConfig:
         return AgentConfig(
             agent_id="librarian",
             name="Librarian",
-            description="STORAGE agent. USE FOR: checking if entities exist ('do I have X?'), searching your collection, counting entities, deleting entities.",
-            patterns=["check", "do i have", "in my", "delete", "remove", "how many"],
+            description="STORAGE agent. USE FOR: checking if entities exist ('do I have X?'), searching your collection, counting entities, deleting entities, adding reviews.",
+            patterns=["check", "do i have", "in my", "delete", "remove", "how many", "add review", "review of", "reviewed"],
             capabilities=[
                 "Check if entities exist in storage",
                 "Search existing collection",
                 "Count and filter entities",
                 "Delete entities from storage",
+                "Add user reviews",
             ],
             example_queries=[
                 "Do I have Inception?",
                 "How many Tom Hanks movies do I have?",
                 "Remove The Matrix",
                 "Show me my sci-fi collection",
+                "Add review for Inception: It was mind-bending!",
             ],
         )
 
@@ -280,21 +323,23 @@ class Librarian(BaseAgent):
                 data = item.to_dict()
                 document = item.to_document() if hasattr(item, "to_document") else str(data)
             elif isinstance(item, dict):
-                data = item
+                data = {k.lower(): v for k, v in item.items()}
                 document = self._build_document(data)
             else:
                 self.log(f"Skipping unknown type: {type(item)}")
                 continue
 
-            item_id = data.get("imdb_id") or data.get("id") or str(uuid.uuid4())
+            item_id = data.get("imdb_id") or data.get("imdbid") or data.get("id") or str(uuid.uuid4())
             title = data.get("title") or data.get("name") or "Unknown Title"
 
             metadata = self._normalize_metadata(data)
             metadata["title"] = title
+            
+            entity_type = data.get("entity_type", "movie")
 
-            if self.vector_store.add(item_id, document, metadata):
+            if self.vector_store.add(item_id, document, metadata, entity_type=entity_type):
                 stored.append(title)
-                self.log_success(f"Stored: {title}")
+                self.log_success(f"Stored: {title} ({entity_type})")
             else:
                 skipped.append(title)
                 self.log(f"Skipped (exists): {title}")
@@ -319,11 +364,25 @@ class Librarian(BaseAgent):
         return "\n".join(parts)
 
     def _normalize_metadata(self, data: dict) -> dict:
-        """Normalize metadata to only primitive types."""
-        return {
-            k: v if isinstance(v, (str, int, float, bool)) else str(v)
-            for k, v in data.items()
-        }
+        """Normalize metadata and cast numeric types."""
+        normalized = {}
+        for k, v in data.items():
+            key = k.lower()
+            if key == "year":
+                try:
+                    normalized[k] = int(str(v).split("-")[0]) # Handle "2023-05-12" or "2023"
+                except:
+                    normalized[k] = str(v)
+            elif key in ["rating", "imdb_rating", "imdbRating"]:
+                try:
+                    normalized[k] = float(v)
+                except:
+                    normalized[k] = str(v)
+            elif isinstance(v, (str, int, float, bool)):
+                normalized[k] = v
+            else:
+                normalized[k] = str(v)
+        return normalized
 
     def store_movies(self, movies: List[Any]) -> dict:
         """Alias for store_items (backward compatibility)."""

@@ -83,7 +83,7 @@ Examples:
     console.print(f"[dim]Query: {query}[/dim]\n")
 
     if args.agent:
-        run_direct_agent(args.agent, query, args.model)
+        run_direct_agent(args.agent, query, args.model, args.verbose)
         return
 
     run_orchestrated(query, args.model, args.verbose)
@@ -129,7 +129,7 @@ def run_chat_mode(model: str | None = None, verbose: bool = False):
             console.print(f"[red]Error:[/red] {e}")
 
 
-def run_direct_agent(agent_id: str, query: str, model: str | None = None):
+def run_direct_agent(agent_id: str, query: str, model: str | None = None, verbose: bool = False):
     """Run a specific agent directly (bypass orchestration)."""
     agent_class = AgentRegistry.get_agent(agent_id)
     if not agent_class:
@@ -143,7 +143,7 @@ def run_direct_agent(agent_id: str, query: str, model: str | None = None):
     console.print(f"[yellow]Agent:[/yellow] {config.name} (direct)")
     console.print("[dim]" + "=" * 60 + "[/dim]\n")
 
-    agent = agent_class(model=model)
+    agent = agent_class(model=model, verbose=verbose)
     result = agent.process(query)
     display_result(result)
 
