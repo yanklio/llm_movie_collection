@@ -12,6 +12,9 @@ import chromadb
 from chromadb.config import Settings
 from dotenv import load_dotenv
 
+from rich.console import Console
+from rich.table import Table
+
 load_dotenv()
 
 
@@ -193,3 +196,32 @@ class VectorStore:
             name=self.COLLECTION_NAME,
             metadata={"description": "Entity documents for RAG retrieval"}
         )
+
+if __name__ == "__main__":
+
+
+    console = Console()
+    store = VectorStore()
+    
+    console.print(f"[bold blue]Vector Store Contents ({store.count()} items)[/bold blue]")
+    
+    items = store.get_all()
+    
+    if not items:
+        console.print("[yellow]The store is empty.[/yellow]")
+    else:
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("ID", style="dim")
+        table.add_column("Type")
+        table.add_column("Title / Content")
+        table.add_column("Year")
+        
+        for item in items:
+            meta = item["metadata"]
+            title = meta.get("title", item["document"][:50] + "...")
+            entity_type = meta.get("entity_type", "unknown")
+            year = str(meta.get("year", "N/A"))
+            
+            table.add_row(item["id"], entity_type, title, year)
+            
+        console.print(table)
