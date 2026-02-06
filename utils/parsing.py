@@ -36,8 +36,8 @@ def extract_json_from_response(content: str) -> Dict[str, Any]:
             if start != -1 and end != -1:
                 content = content[start : end + 1]
 
-        # 4. Parse
-        return json.loads(content)
+        # 4. Parse (strict=False allows control characters like newlines in strings)
+        return json.loads(content, strict=False)
         
     except Exception as e:
         # Caller should handle logging if needed
